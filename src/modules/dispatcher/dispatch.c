@@ -282,6 +282,12 @@ int ds_set_attrs(ds_dest_t *dest, str *vattrs)
 		} else if(pit->name.len == 2
 				  && strncasecmp(pit->name.s, "cc", 2) == 0) {
 			str2sint(&pit->body, &dest->attrs.congestion_control);
+		}else if(pit->name.len == 2
+				  && strncasecmp(pit->name.s, "cc", 2) == 0) {
+			str2sint(&pit->body, &dest->attrs.congestion_control);
+		} else if(pit->name.len == 12
+				  && strncasecmp(pit->name.s, "ping_contact", 12) == 0) {
+			dest->attrs.ping_contact = pit->body;
 		} else if(pit->name.len == 6
 				  && strncasecmp(pit->name.s, "weight", 6) == 0) {
 			str2sint(&pit->body, &dest->attrs.weight);
@@ -3060,6 +3066,7 @@ void ds_ping_set(ds_set_t *node)
 	uac_req_t uac_r;
 	int i, j;
 	str ping_from;
+	str headers;
 
 	if(!node)
 		return;
@@ -3077,11 +3084,32 @@ void ds_ping_set(ds_set_t *node)
 			LM_DBG("probing set #%d, URI %.*s\n", node->id,
 					node->dlist[j].uri.len, node->dlist[j].uri.s);
 
+/*VS Teams Integration
+If teams_proxy attrib set add these headers
+*/
+//if(node->dlist[j].attrs.teams_proxy == 1){
+//	headers = teams_headers;//str_init("Contact:<sip:druat.voicesimplified.com:5067;transport=tls>\r\n");
+//}
+		if(node->dlist[j].attrs.ping_contact.s != NULL
+			&& node->dlist[j].attrs.ping_contact.len > 0) {
+				char buff[256];
+				snprintf(buff, 256, "Contact: <%s>\r\n", node->dlist[j].attrs.ping_contact.s);
+				headers.len = strlen(buff);
+				headers.s = buff;
+				LM_DBG("ping_contact: %.*s\n", headers.len, headers.s);
+		} else {
+			headers.len = 0;
+			headers.s = "";
+		}
+
+//else{
+//	headers = str_init("");
+//}
 			/* Send ping using TM-Module.
 			 * int request(str* m, str* ruri, str* to, str* from, str* h,
 			 *		str* b, str *oburi,
 			 *		transaction_cb cb, void* cbp); */
-			set_uac_req(&uac_r, &ds_ping_method, 0, 0, 0, TMCB_LOCAL_COMPLETED,
+			set_uac_req(&uac_r, &ds_ping_method, &headers, 0, 0, TMCB_LOCAL_COMPLETED,
 					ds_options_callback, (void *)(long)node->id);
 			if(node->dlist[j].attrs.socket.s != NULL
 					&& node->dlist[j].attrs.socket.len > 0) {
