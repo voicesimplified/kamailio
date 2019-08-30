@@ -90,7 +90,6 @@ struct rr_binds uac_rrb;
 pv_spec_t auth_username_spec;
 pv_spec_t auth_realm_spec;
 pv_spec_t auth_password_spec;
-struct dlg_binds dlg_api;
 
 static int w_replace_from(struct sip_msg* msg, char* p1, char* p2);
 static int w_restore_from(struct sip_msg* msg, char* p1, char* p2);
@@ -294,15 +293,17 @@ static int mod_init(void)
 		if (restore_mode==UAC_AUTO_RESTORE) {
 			/* we need the append_fromtag on in RR */
 
-			memset(&dlg_api, 0, sizeof(struct dlg_binds));
-			if (uac_restore_dlg==0 || load_dlg_api(&dlg_api)!=0) {
+			if (uac_restore_dlg==0) {
 				if (!uac_rrb.append_fromtag) {
 					LM_ERR("'append_fromtag' RR param is not enabled!"
 							" - required by AUTO restore mode\n");
 					goto error;
 				}
-				if (uac_restore_dlg!=0)
-					LM_DBG("failed to find dialog API - is dialog module loaded?\n");
+			} else {
+				if (uac_init_dlg()!=0) {
+					LM_ERR("failed to find dialog API - is dialog module loaded?\n");
+					goto error;
+				}
 			}
 
 			/* get all requests doing loose route */
@@ -381,6 +382,7 @@ static int child_init(int rank)
 
 		kam_srand(getpid() * 17 +  time(0));
 		uac_reg_load_db();
+		LM_DBG("run initial uac registration routine\n");
 		uac_reg_timer(0);
 		for(;;){
 			/* update the local config framework structures */

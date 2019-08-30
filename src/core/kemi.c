@@ -839,6 +839,12 @@ static int sr_kemi_core_is_method_in(sip_msg_t *msg, str *vmethod)
 					return SR_KEMI_TRUE;
 				}
 			break;
+			case 'U':
+			case 'u':
+				if(imethod==METHOD_UPDATE) {
+					return SR_KEMI_TRUE;
+				}
+			break;
 			case 'K':
 			case 'k':
 				if(imethod==METHOD_KDMQ) {
@@ -863,6 +869,8 @@ static int sr_kemi_core_is_method_in(sip_msg_t *msg, str *vmethod)
 					return SR_KEMI_TRUE;
 				}
 			break;
+			default:
+				LM_WARN("unsupported method flag: %c\n", vmethod->s[i]);
 		}
 	}
 	return SR_KEMI_FALSE;
@@ -2420,5 +2428,21 @@ int sr_kemi_route(sr_kemi_eng_t *keng, sip_msg_t *msg, int rtype,
 	reset_static_buffer();
 	ret = keng->froute(msg, rtype, ename, edata);
 	setsflagsval(sfbk);
+	return ret;
+}
+
+/**
+ *
+ */
+int sr_kemi_ctx_route(sr_kemi_eng_t *keng, run_act_ctx_t *ctx, sip_msg_t *msg,
+		int rtype, str *ename, str *edata)
+{
+	run_act_ctx_t *bctx;
+	int ret;
+
+	bctx = sr_kemi_act_ctx_get();
+	sr_kemi_act_ctx_set(ctx);
+	ret = sr_kemi_route(keng, msg, rtype, ename, edata);
+	sr_kemi_act_ctx_set(bctx);
 	return ret;
 }

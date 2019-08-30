@@ -1717,12 +1717,13 @@ static int build_rtpp_socks(int lmode, int rtest) {
 	}
 
 	rtpp_socks_size = current_rtpp_no;
-	rtpp_socks = (int*)pkg_reallocxf(rtpp_socks, sizeof(int)*(rtpp_socks_size));
+	/* allocate one more to have a safety end place holder */
+	rtpp_socks = (int*)pkg_reallocxf(rtpp_socks, sizeof(int)*(rtpp_socks_size+1));
 	if (!rtpp_socks) {
 		LM_ERR("no more pkg memory for rtpp_socks\n");
 		return -1;
 	}
-	memset(rtpp_socks, -1, sizeof(int)*(rtpp_socks_size));
+	memset(rtpp_socks, -1, sizeof(int)*(rtpp_socks_size+1));
 
 	rtpe_reload_lock_get(rtpp_set_list->rset_head_lock);
 	_rtpe_list_vernum_local = _rtpe_list_version->vernum;
@@ -2642,7 +2643,7 @@ send_rtpp_command(struct rtpp_node *node, bencode_item_t *dict, int *outlen)
 	static char buf[0x10000];
 	struct pollfd fds[1];
 	struct iovec *v;
-	str out = STR_NULL;
+	str cmd = STR_NULL;
 
 	v = bencode_iovec(dict, &vcnt, 1, 0);
 	if (!v) {
@@ -2707,8 +2708,9 @@ send_rtpp_command(struct rtpp_node *node, bencode_item_t *dict, int *outlen)
 				len = writev(rtpp_socks[node->idx], v, vcnt + 1);
 			} while (len == -1 && (errno == EINTR || errno == ENOBUFS));
 			if (len <= 0) {
-				bencode_get_str(bencode_dictionary_get(dict, "command"), &out);
-				LM_ERR("can't send command \"%.*s\" to RTP proxy <%s>\n", out.len, out.s, node->rn_url.s);
+				bencode_get_str(bencode_dictionary_get(dict, "command"), &cmd);
+				LM_ERR("can't send command \"%.*s\" to RTP proxy <%s>\n",
+					cmd.len, cmd.s, node->rn_url.s);
 				goto badproxy;
 			}
 			rtpengine_tout_ms = cfg_get(rtpengine,rtpengine_cfg,rtpengine_tout_ms);
@@ -2718,7 +2720,9 @@ send_rtpp_command(struct rtpp_node *node, bencode_item_t *dict, int *outlen)
 					len = recv(rtpp_socks[node->idx], buf, sizeof(buf)-1, 0);
 				} while (len == -1 && errno == EINTR);
 				if (len <= 0) {
-					LM_ERR("can't read reply for command \"%.*s\" from RTP proxy <%s>\n", out.len, out.s, node->rn_url.s);
+					bencode_get_str(bencode_dictionary_get(dict, "command"), &cmd);
+					LM_ERR("can't read reply for command \"%.*s\" from RTP proxy <%s>\n",
+						cmd.len, cmd.s, node->rn_url.s);
 					goto badproxy;
 				}
 				if (len >= (v[0].iov_len - 1) &&
@@ -2735,7 +2739,9 @@ send_rtpp_command(struct rtpp_node *node, bencode_item_t *dict, int *outlen)
 			}
 		}
 		if (i == rtpengine_retr) {
-			LM_ERR("timeout waiting reply for command \"%.*s\" from RTP proxy <%s>\n", out.len, out.s, node->rn_url.s);
+			bencode_get_str(bencode_dictionary_get(dict, "command"), &cmd);
+			LM_ERR("timeout waiting reply for command \"%.*s\" from RTP proxy <%s>\n",
+				cmd.len, cmd.s, node->rn_url.s);
 			goto badproxy;
 		}
 	}

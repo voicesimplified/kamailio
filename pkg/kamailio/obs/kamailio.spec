@@ -1,5 +1,5 @@
 %define name    kamailio
-%define ver 5.2.2
+%define ver 5.2.4
 %define rel dev1.0%{dist}
 
 %if 0%{?fedora} == 27
@@ -18,6 +18,7 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_without phonenum
+%bcond_without python3
 %bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -42,6 +43,7 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_without phonenum
+%bcond_without python3
 %bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -66,6 +68,7 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_without phonenum
+%bcond_without python3
 %bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -90,6 +93,7 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_without phonenum
+%bcond_without python3
 %bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -104,16 +108,17 @@
 %bcond_with cnxcc
 %bcond_without dnssec
 %bcond_without geoip
-%bcond_with http_async_client
+%bcond_without http_async_client
 %bcond_without ims
-%bcond_with jansson
-%bcond_with json
+%bcond_without jansson
+%bcond_without json
 %bcond_without lua
-%bcond_with kazoo
+%bcond_without kazoo
 %bcond_without memcached
 %bcond_with mongodb
 %bcond_without perl
 %bcond_with phonenum
+%bcond_with python3
 %bcond_with rabbitmq
 %bcond_with redis
 %bcond_with ruby
@@ -139,6 +144,7 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_without phonenum
+%bcond_without python3
 %bcond_without rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -163,6 +169,7 @@
 %bcond_with mongodb
 %bcond_without perl
 %bcond_with phonenum
+%bcond_without python3
 %bcond_with rabbitmq
 %bcond_without redis
 %bcond_without ruby
@@ -187,6 +194,7 @@
 %bcond_with mongodb
 %bcond_with perl
 %bcond_with phonenum
+%bcond_with python3
 %bcond_with rabbitmq
 %bcond_with redis
 %bcond_with ruby
@@ -211,12 +219,18 @@
 %bcond_without mongodb
 %bcond_without perl
 %bcond_with phonenum
+%bcond_with python3
 %bcond_with rabbitmq
 %bcond_without redis
 %bcond_with ruby
 %bcond_with sctp
 %bcond_with websocket
 %bcond_without xmlrpc
+%endif
+
+# Defining missing macros on RHEL/CentOS 6
+%if 0%{?rhel} == 6
+%define _rundir %{_localstatedir}/run
 %endif
 
 # redefine buggy openSUSE Leap _sharedstatedir macro. More info at https://bugzilla.redhat.com/show_bug.cgi?id=183370
@@ -278,12 +292,7 @@ BuildRequires:  bison, flex
 Requires:  filesystem
 BuildRequires:  systemd-mini, shadow
 %endif
-%if 0%{?fedora} == 27
-BuildRequires:  python3-devel
-%endif
-%if 0%{?fedora} == 28
-BuildRequires:  python3-devel
-%endif
+
 
 %description
 Kamailio (former OpenSER) is an Open Source SIP Server released under GPL, able
@@ -302,6 +311,14 @@ like Asterisk™, FreeSWITCH™ or SEMS.
 %package    acc_json
 Summary:    Account transaction information in a JSON dictionary
 Group:      %{PKGGROUP}
+Requires:   kamailio = %ver
+%if 0%{?rhel} == 6
+Requires:   libevent2
+BuildRequires:  libevent2-devel
+%else
+Requires:   libevent
+BuildRequires:  libevent-devel
+%endif
 %if 0%{?suse_version}
 Requires:   libjansson
 BuildRequires:  libjansson-devel
@@ -388,7 +405,7 @@ Module which provides a mechanism to limit call duration based on credit informa
 %package    cpl
 Summary:    CPL (Call Processing Language) interpreter for Kamailio
 Group:      %{PKGGROUP}
-Requires:   libxml2, kamailio = %ver
+Requires:   which, libxml2, kamailio = %ver
 BuildRequires:  libxml2-devel
 
 %description    cpl
@@ -477,8 +494,14 @@ Compressed body (SIP and HTTP) handling for kamailio.
 %package    http_async_client
 Summary:    Async HTTP client module for Kamailio
 Group:      %{PKGGROUP}
-Requires:   libevent, kamailio = %ver
-BuildRequires: libevent-devel
+Requires:   kamailio = %ver
+%if 0%{?rhel} == 6
+Requires:   libevent2
+BuildRequires:  libevent2-devel
+%else
+Requires:   libevent
+BuildRequires:  libevent-devel
+%endif
 %if 0%{?suse_version}
 Requires:   libcurl4
 BuildRequires:  libcurl-devel
@@ -523,7 +546,14 @@ IMS modules and extensions module for Kamailio.
 %package    jansson
 Summary:    JSON string handling and RPC modules for Kamailio using JANSSON library
 Group:      %{PKGGROUP}
-Requires:   libevent, kamailio = %ver
+Requires:   kamailio = %ver
+%if 0%{?rhel} == 6
+Requires:   libevent2
+BuildRequires:  libevent2-devel
+%else
+Requires:   libevent
+BuildRequires:  libevent-devel
+%endif
 %if 0%{?suse_version}
 Requires:   libjson-c2
 BuildRequires:  libjansson-devel
@@ -541,8 +571,14 @@ JSON string handling and RPC modules for Kamailio using JANSSON library.
 %package    json
 Summary:    JSON string handling and RPC modules for Kamailio
 Group:      %{PKGGROUP}
-Requires:   libevent, kamailio = %ver
+Requires:   kamailio = %ver
+%if 0%{?rhel} == 6
+Requires:   libevent2
+BuildRequires:  libevent2-devel
+%else
+Requires:   libevent
 BuildRequires:  libevent-devel
+%endif
 %if 0%{?suse_version}
 Requires:   libjson-c2
 BuildRequires:  libjson-c-devel
@@ -560,8 +596,15 @@ JSON string handling and RPC modules for Kamailio.
 %package    kazoo
 Summary:    Kazoo middle layer connector support for Kamailio
 Group:      %{PKGGROUP}
-Requires:   libuuid, librabbitmq, json-c, libevent, kamailio = %ver
-BuildRequires:  libuuid-devel, librabbitmq-devel, json-c-devel, libevent-devel
+Requires:   libuuid, librabbitmq, json-c, kamailio = %ver
+BuildRequires:  libuuid-devel, librabbitmq-devel, json-c-devel
+%if 0%{?rhel} == 6
+Requires:   libevent2
+BuildRequires:  libevent2-devel
+%else
+Requires:   libevent
+BuildRequires:  libevent-devel
+%endif
 
 %description    kazoo
 Kazoo module for Kamailio.
@@ -728,6 +771,16 @@ Summary:    Python extensions for Kamailio
 Group:      %{PKGGROUP}
 Requires:   python, kamailio = %ver
 BuildRequires:  python, python-devel
+%if %{with python3}
+%if 0%{?rhel} == 7
+Requires:   python36, kamailio = %ver
+BuildRequires:  python36, python36-devel
+%else
+Requires:   python3, kamailio = %ver
+BuildRequires:  python3, python3-devel
+%endif
+%endif
+
 
 %description    python
 Python extensions for Kamailio.
@@ -1042,9 +1095,14 @@ UUID module for Kamailio.
 %prep
 %setup -n %{name}-%{ver}
 
+%if "%{__python2}" != ""
+    sed -i -e 's:#!/usr/bin/python:#!%{__python2}:' utils/kamctl/dbtextdb/dbtextdb.py
+%endif
+
 ln -s ../obs pkg/kamailio/fedora/27
 ln -s ../obs pkg/kamailio/fedora/28
 ln -s ../obs pkg/kamailio/fedora/29
+ln -s ../obs pkg/kamailio/fedora/30
 ln -s ../obs pkg/kamailio/rhel/6
 ln -s ../obs pkg/kamailio/rhel/7
 ln -s ../obs pkg/kamailio/opensuse/1315
@@ -1122,7 +1180,11 @@ make every-module skip_modules="app_mono db_cassandra db_oracle iptrtpproxy \
 %if %{with phonenum}
     kphonenum \
 %endif
-    kpostgres kpresence kpython kradius \
+    kpostgres kpresence kpython \
+%if %{with python3}
+    kpython3 \
+%endif
+    kradius \
 %if %{with redis}
     kredis \
 %endif
@@ -1202,7 +1264,11 @@ make install-modules-all skip_modules="app_mono db_cassandra db_oracle \
 %if %{with phonenum}
     kphonenum \
 %endif
-    kpostgres kpresence kpython kradius \
+    kpostgres kpresence kpython \
+%if %{with python3}
+    kpython3 \
+%endif
+    kradius \
 %if %{with redis}
     kredis \
 %endif
@@ -1734,6 +1800,7 @@ fi
 %doc %{_docdir}/kamailio/modules/README.ims_registrar_pcscf
 %doc %{_docdir}/kamailio/modules/README.ims_registrar_scscf
 %doc %{_docdir}/kamailio/modules/README.ims_usrloc_pcscf
+%doc %{_docdir}/kamailio/modules/README.ims_usrloc_scscf
 %{_libdir}/kamailio/modules/cdp.so
 %{_libdir}/kamailio/modules/cdp_avp.so
 %{_libdir}/kamailio/modules/ims_auth.so
@@ -1937,6 +2004,10 @@ fi
 %defattr(-,root,root)
 %doc %{_docdir}/kamailio/modules/README.app_python
 %{_libdir}/kamailio/modules/app_python.so
+%if %{with python3}
+%doc %{_docdir}/kamailio/modules/README.app_python3
+%{_libdir}/kamailio/modules/app_python3.so
+%endif
 
 
 %if %{with rabbitmq}

@@ -288,7 +288,7 @@ static int child_init(int rank)
 			run_top_route(event_rt.rlist[rt], fmsg, &ctx);
 		} else {
 			if(keng!=NULL) {
-				if(sr_kemi_route(keng, fmsg, EVENT_ROUTE,
+				if(sr_kemi_ctx_route(keng, &ctx, fmsg, EVENT_ROUTE,
 							&ht_event_callback, &evname)<0) {
 					LM_ERR("error running event route kemi callback\n");
 					return -1;
@@ -677,6 +677,11 @@ static int ht_reset_by_name(str *hname)
 
 }
 
+static int ki_ht_reset_by_name(sip_msg_t* msg, str *hname)
+{
+	return ht_reset_by_name(hname);
+}
+
 static int ht_reset(struct sip_msg* msg, char* htname, char* foo)
 {
 	str sname;
@@ -1041,7 +1046,7 @@ static int ki_ht_setxs(sip_msg_t *msg, str *htname, str *itname, str *itval,
 		}
 	}
 	isval.s = *itval;
-	if(ht_set_cell(ht, itname, AVP_VAL_STR, &isval, 1)!=0) {
+	if(ht_set_cell_ex(ht, itname, AVP_VAL_STR, &isval, 1, exval)!=0) {
 		LM_ERR("cannot set hash table: %.*s key: %.*s\n", htname->len, htname->s,
 				itname->len, itname->s);
 		return -1;
@@ -1611,7 +1616,7 @@ static sr_kemi_t sr_kemi_htable_exports[] = {
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},
 	{ str_init("htable"), str_init("sht_reset"),
-		SR_KEMIP_INT, ht_reset_by_name,
+		SR_KEMIP_INT, ki_ht_reset_by_name,
 		{ SR_KEMIP_STR, SR_KEMIP_NONE, SR_KEMIP_NONE,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},

@@ -23,6 +23,7 @@
 #include <stdlib.h>
 
 #include <Python.h>
+#include <frameobject.h>
 
 #include "../../core/dprint.h"
 #include "../../core/route.h"
@@ -30,6 +31,7 @@
 #include "../../core/kemi.h"
 #include "../../core/locking.h"
 #include "../../core/pvar.h"
+#include "../../core/timer.h"
 #include "../../core/mem/pkg.h"
 #include "../../core/mem/shm.h"
 #include "../../core/rpc.h"
@@ -166,12 +168,11 @@ PyObject *sr_apy_kemi_return_str(sr_kemi_t *ket, char *sval, int slen)
 /**
  *
  */
-PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
+PyObject *sr_apy_kemi_exec_func_ex(sr_kemi_t *ket, PyObject *self, PyObject *args, int idx)
 {
 	str fname;
 	int i;
 	int ret;
-	sr_kemi_t *ket = NULL;
 	sr_kemi_val_t vps[SR_KEMI_PARAMS_MAX];
 	sr_apy_env_t *env_P;
 	sip_msg_t *lmsg = NULL;
@@ -188,10 +189,6 @@ PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
 		lmsg = env_P->msg;
 	}
 
-	ket = sr_apy_kemi_export_get(idx);
-	if(ket==NULL) {
-		return sr_kemi_apy_return_false();
-	}
 	if(ket->mname.len>0) {
 		LM_DBG("execution of method: %.*s\n", ket->fname.len, ket->fname.s);
 	} else {
@@ -363,6 +360,22 @@ PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
 				vps[3].s.len, vps[3].s.s);
 		} else if(ket->ptypes[0]==SR_KEMIP_STR
 				&& ket->ptypes[1]==SR_KEMIP_STR
+				&& ket->ptypes[2]==SR_KEMIP_STR
+				&& ket->ptypes[3]==SR_KEMIP_INT) {
+			if(!PyArg_ParseTuple(args, "sssi:kemi-param-sssn",
+						&vps[0].s.s, &vps[1].s.s, &vps[2].s.s, &vps[3].n)) {
+				LM_ERR("unable to retrieve str-str-str-int params %d\n", i);
+				return sr_kemi_apy_return_false();
+			}
+			vps[0].s.len = strlen(vps[0].s.s);
+			vps[1].s.len = strlen(vps[1].s.s);
+			vps[2].s.len = strlen(vps[2].s.s);
+			LM_DBG("params[%d] for: %.*s are str: [%.*s] [%.*s]"
+					" [%.*s] [%d]\n", i,
+				fname.len, fname.s, vps[0].s.len, vps[0].s.s,
+				vps[1].s.len, vps[1].s.s, vps[2].s.len, vps[2].s.s, vps[3].n);
+		} else if(ket->ptypes[0]==SR_KEMIP_STR
+				&& ket->ptypes[1]==SR_KEMIP_STR
 				&& ket->ptypes[2]==SR_KEMIP_INT
 				&& ket->ptypes[3]==SR_KEMIP_INT) {
 			if(!PyArg_ParseTuple(args, "ssii:kemi-param-ssnn",
@@ -418,6 +431,25 @@ PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
 				fname.len, fname.s, vps[0].s.len, vps[0].s.s,
 				vps[1].s.len, vps[1].s.s, vps[2].s.len, vps[2].s.s,
 				vps[3].s.len, vps[3].s.s, vps[4].s.len, vps[4].s.s);
+		} else if(ket->ptypes[0]==SR_KEMIP_STR
+				&& ket->ptypes[1]==SR_KEMIP_STR
+				&& ket->ptypes[2]==SR_KEMIP_INT
+				&& ket->ptypes[3]==SR_KEMIP_INT
+				&& ket->ptypes[4]==SR_KEMIP_STR) {
+			if(!PyArg_ParseTuple(args, "ssiis:kemi-param-ssnns",
+						&vps[0].s.s, &vps[1].s.s, &vps[2].n, &vps[3].n,
+						&vps[4].s.s)) {
+				LM_ERR("unable to retrieve str-str-int-int-str params %d\n", i);
+				return sr_kemi_apy_return_false();
+			}
+			vps[0].s.len = strlen(vps[0].s.s);
+			vps[1].s.len = strlen(vps[1].s.s);
+			vps[4].s.len = strlen(vps[4].s.s);
+			LM_DBG("params[%d] for: %.*s are str: [%.*s] [%.*s]"
+					" [%d] [%d] [%.*s]\n", i,
+				fname.len, fname.s, vps[0].s.len, vps[0].s.s,
+				vps[1].s.len, vps[1].s.s, vps[2].n, vps[3].n,
+				vps[4].s.len, vps[4].s.s);
 		} else {
 			LM_ERR("not implemented yet\n");
 			return sr_kemi_apy_return_false();
@@ -664,6 +696,16 @@ PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
 						&vps[0].s, &vps[1].s, &vps[2].s, &vps[3].s,
 						&vps[4].s);
 				return sr_kemi_apy_return_int(ket, ret);
+			} else if(ket->ptypes[0]==SR_KEMIP_STR
+					&& ket->ptypes[1]==SR_KEMIP_STR
+					&& ket->ptypes[2]==SR_KEMIP_INT
+					&& ket->ptypes[3]==SR_KEMIP_INT
+					&& ket->ptypes[4]==SR_KEMIP_STR) {
+				/* ssnns */
+				ret = ((sr_kemi_fmssnns_f)(ket->func))(lmsg,
+						&vps[0].s, &vps[1].s, vps[2].n, vps[3].n,
+						&vps[4].s);
+				return sr_kemi_apy_return_int(ket, ret);
 			} else {
 				LM_ERR("invalid parameters for: %.*s\n",
 						fname.len, fname.s);
@@ -693,6 +735,55 @@ PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
 					fname.len, fname.s);
 			return sr_kemi_apy_return_false();
 	}
+}
+
+/**
+ *
+ */
+PyObject *sr_apy_kemi_exec_func(PyObject *self, PyObject *args, int idx)
+{
+	sr_kemi_t *ket = NULL;
+	PyObject *ret = NULL;
+	PyThreadState *pstate = NULL;
+	PyFrameObject *pframe = NULL;
+	struct timeval tvb, tve;
+	struct timezone tz;
+	unsigned int tdiff;
+
+	ket = sr_apy_kemi_export_get(idx);
+	if(ket==NULL) {
+		return sr_kemi_apy_return_false();
+	}
+	if(unlikely(cfg_get(core, core_cfg, latency_limit_action)>0)
+			&& is_printable(cfg_get(core, core_cfg, latency_log))) {
+		gettimeofday(&tvb, &tz);
+	}
+
+	ret = sr_apy_kemi_exec_func_ex(ket, self, args, idx);
+
+	if(unlikely(cfg_get(core, core_cfg, latency_limit_action)>0)
+			&& is_printable(cfg_get(core, core_cfg, latency_log))) {
+		gettimeofday(&tve, &tz);
+		tdiff = (tve.tv_sec - tvb.tv_sec) * 1000000
+				   + (tve.tv_usec - tvb.tv_usec);
+		if(tdiff >= cfg_get(core, core_cfg, latency_limit_action)) {
+			pstate = PyThreadState_GET();
+			if (pstate != NULL && pstate->frame != NULL) {
+				pframe = pstate->frame;
+			}
+
+			LOG(cfg_get(core, core_cfg, latency_log),
+					"alert - action KSR.%s%s%s(...)"
+					" took too long [%u ms] (file:%s func:%s line:%d)\n",
+					(ket->mname.len>0)?ket->mname.s:"",
+					(ket->mname.len>0)?".":"", ket->fname.s, tdiff,
+					(pframe)?PyBytes_AS_STRING(pframe->f_code->co_filename):"",
+					(pframe)?PyBytes_AS_STRING(pframe->f_code->co_name):"",
+					(pframe)?PyCode_Addr2Line(pframe->f_code, pframe->f_lasti):0);
+		}
+	}
+
+	return ret;
 }
 
 /**
