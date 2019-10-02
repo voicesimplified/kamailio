@@ -32,6 +32,13 @@
 #include <resolv.h>
 #include <string.h>
 
+/* older glibc < 2.25 does not include T_OPT in nameser_compat.h yet */
+#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 25
+#ifndef T_OPT
+#define T_OPT ns_t_opt
+#endif
+#endif
+
 #include "resolve.h"
 #include "compiler_opt.h"
 #include "dprint.h"
@@ -934,6 +941,12 @@ again:
 			case T_PTR:
 				rd->rdata=(void*) dns_ptr_parser(buff.buff, end, p);
 				if(unlikely(rd->rdata==0)) goto error_parse;
+				*last=rd;
+				last=&(rd->next);
+				break;
+			case T_OPT:
+				/* skip DNS extensions, e.g. EDNS0 */
+				rd->rdata=0;
 				*last=rd;
 				last=&(rd->next);
 				break;
