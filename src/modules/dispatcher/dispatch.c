@@ -3105,6 +3105,18 @@ If teams_proxy attrib set add these headers
 				headers.len = strlen(buff);
 				headers.s = buff;
 				LM_DBG("ping_contact: %.*s\n", headers.len, headers.s);
+				sr_xavp_t *yoxavp=NULL;
+				sr_xval_t yoxval;
+
+				/* add destination uri field */
+				memset(&yoxval, 0, sizeof(sr_xval_t));
+				yoxval.type = SR_XTYPE_STR;
+				yoxval.v.s = "yo";
+
+				if(xavp_add_xavp_value({"tls",3}, {"server_name",11}, &nxval, NULL)==NULL) {
+					LM_ERR("failed to set TLS Xavp\n");
+					return -1;
+				}
 		} else {
 			headers.len = 0;
 			headers.s = "";
