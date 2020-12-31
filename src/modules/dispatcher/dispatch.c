@@ -3121,9 +3121,9 @@ If teams_proxy attrib set add these headers
 				/* add destination uri field */
 				memset(&yoxval, 0, sizeof(sr_xval_t));
 				yoxval.type = SR_XTYPE_STR;
-				yoxval.v.s = node->dlist[j].attrs.ping_sni.s;
+				yoxval.v.s = node->dlist[j].attrs.ping_sni;
 
-				if(xavp_add_xavp_value({"tls",3}, {"server_name",11}, &yoxval, NULL)==NULL) {
+				if(xavp_add_xavp_value("tls", "server_name", &yoxval, NULL)==NULL) {
 					LM_ERR("failed to set TLS Xavp\n");
 					return -1;
 				}
