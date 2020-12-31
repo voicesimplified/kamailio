@@ -174,6 +174,7 @@ typedef struct _ds_attrs {
 	int congestion_control;
 	str ping_from;
 	str ping_contact;
+	str ping_sni;
 } ds_attrs_t;
 
 typedef struct _ds_latency_stats {

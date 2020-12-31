@@ -288,6 +288,9 @@ int ds_set_attrs(ds_dest_t *dest, str *vattrs)
 		} else if(pit->name.len == 12
 				  && strncasecmp(pit->name.s, "ping_contact", 12) == 0) {
 			dest->attrs.ping_contact = pit->body;
+		}else if(pit->name.len == 8
+				  && strncasecmp(pit->name.s, "ping_sni", 8) == 0) {
+			dest->attrs.ping_sni = pit->body;
 		} else if(pit->name.len == 6
 				  && strncasecmp(pit->name.s, "weight", 6) == 0) {
 			str2sint(&pit->body, &dest->attrs.weight);
@@ -3105,22 +3108,31 @@ If teams_proxy attrib set add these headers
 				headers.len = strlen(buff);
 				headers.s = buff;
 				LM_DBG("ping_contact: %.*s\n", headers.len, headers.s);
+		} else {
+			headers.len = 0;
+			headers.s = "";
+		}
+
+		if(node->dlist[j].attrs.ping_sni.s != NULL
+			&& node->dlist[j].attrs.ping_sni.len > 0) {
 				sr_xavp_t *yoxavp=NULL;
 				sr_xval_t yoxval;
 
 				/* add destination uri field */
 				memset(&yoxval, 0, sizeof(sr_xval_t));
 				yoxval.type = SR_XTYPE_STR;
-				yoxval.v.s = "yo";
+				yoxval.v.s = node->dlist[j].attrs.ping_sni.s;
 
-				if(xavp_add_xavp_value({"tls",3}, {"server_name",11}, &nxval, NULL)==NULL) {
+				if(xavp_add_xavp_value({"tls",3}, {"server_name",11}, &yoxval, NULL)==NULL) {
 					LM_ERR("failed to set TLS Xavp\n");
 					return -1;
 				}
+				LM_DBG("ping_sni: %.*s\n", headers.len, headers.s);
 		} else {
 			headers.len = 0;
 			headers.s = "";
-		}
+		}				
+
 
 //else{
 //	headers = str_init("");
