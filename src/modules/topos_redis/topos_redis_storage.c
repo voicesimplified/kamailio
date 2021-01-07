@@ -360,7 +360,7 @@ int tps_redis_insert_invite_branch(tps_data_t *td)
 		}
 		return -1;
 	}
-	LM_DBG("inserting branch record for [%.*s] with argc %d\n",
+	LM_DBG("inserting invite branch record for [%.*s] with argc %d\n",
 			rkey.len, rkey.s, argc);
 
 	freeReplyObject(rrpl);
@@ -570,7 +570,7 @@ int tps_redis_load_invite_branch(sip_msg_t *msg, tps_data_t *md, tps_data_t *sd)
 		return -1;
 
 	if(md->a_callid.len<=0 || md->b_tag.len<=0) {
-		LM_INFO("no call-id or to-rag for this message\n");
+		LM_INFO("no call-id or to-tag for this message\n");
 		return -1;
 	}
 
@@ -607,7 +607,7 @@ int tps_redis_load_invite_branch(sip_msg_t *msg, tps_data_t *md, tps_data_t *sd)
 	argvlen[argc] = rkey.len;
 	argc++;
 
-	LM_DBG("loading branch record for [%.*s]\n", rkey.len, rkey.s);
+	LM_DBG("loading invite branch record for [%.*s]\n", rkey.len, rkey.s);
 
 	rrpl = _tps_redis_api.exec_argv(rsrv, argc, (const char **)argv, argvlen);
 	if(rrpl==NULL) {
@@ -727,6 +727,7 @@ int tps_redis_load_branch(sip_msg_t *msg, tps_data_t *md, tps_data_t *sd,
 	memset(argv, 0, TPS_REDIS_NR_KEYS * sizeof(char*));
 	memset(argvlen, 0, TPS_REDIS_NR_KEYS * sizeof(size_t));
 	argc = 0;
+	memset(&id, 0, sizeof(tps_data_t));
 
 	if(mode==0) {
 		/* load same transaction using Via branch */
@@ -737,7 +738,6 @@ int tps_redis_load_branch(sip_msg_t *msg, tps_data_t *md, tps_data_t *sd,
 			LM_ERR("failed to load the INVITE branch value\n");
 			return -1;
 		}
-		memset(&id, 0, sizeof(tps_data_t));
 		xvbranch1 = &id.x_vbranch1;
 	}
 	if(xvbranch1->len<=0 || xvbranch1->s==NULL) {
@@ -1280,6 +1280,20 @@ int tps_redis_update_dialog(sip_msg_t *msg, tps_data_t *md, tps_data_t *sd,
 			liflags = sd->iflags|TPS_IFLAG_DLGON;
 			TPS_REDIS_SET_ARGN(liflags, rp, &rval, argc, &td_key_iflags,
 					argv, argvlen);
+		}
+	}
+
+	if(sd->b_tag.len>0 && ((mode & TPS_DBU_BRR) || (mode & TPS_DBU_ARR))) {
+		if(((md->direction == TPS_DIR_DOWNSTREAM) && (msg->first_line.type==SIP_REPLY)) ||
+					((md->direction == TPS_DIR_UPSTREAM) && (msg->first_line.type==SIP_REQUEST))) {
+			if(((sd->iflags&TPS_IFLAG_DLGON) == 0) && (mode & TPS_DBU_BRR)) {
+				TPS_REDIS_SET_ARGS(&md->b_rr, argc, &td_key_b_rr, argv, argvlen);
+			}
+		} else {
+			if(((sd->iflags&TPS_IFLAG_DLGON) == 0) && (mode & TPS_DBU_ARR)) {
+				TPS_REDIS_SET_ARGS(&md->a_rr, argc, &td_key_a_rr, argv, argvlen);
+				TPS_REDIS_SET_ARGS(&md->s_rr, argc, &td_key_s_rr, argv, argvlen);
+			}
 		}
 	}
 

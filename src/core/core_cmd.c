@@ -185,7 +185,7 @@ static const char* dns_get_server_state_doc[] = {
 
 #endif /* DNS_WATCHDOG_SUPPORT */
 #endif /* USE_DNS_CACHE */
-#ifdef USE_DST_BLACKLIST
+#ifdef USE_DST_BLOCKLIST
 void dst_blst_debug(rpc_t* rpc, void* ctx);
 void dst_blst_mem_info(rpc_t* rpc, void* ctx);
 void dst_blst_view(rpc_t* rpc, void* ctx);
@@ -193,39 +193,38 @@ void dst_blst_delete_all(rpc_t* rpc, void* ctx);
 void dst_blst_add(rpc_t* rpc, void* ctx);
 
 static const char* dst_blst_mem_info_doc[] = {
-	"dst blacklist memory usage info.",  /* Documentation string */
+	"dst blocklist memory usage info.",  /* Documentation string */
 	0                                    /* Method signature(s) */
 };
 static const char* dst_blst_debug_doc[] = {
-	"dst blacklist debug info.",  /* Documentation string */
+	"dst blocklist debug info.",  /* Documentation string */
 	0                               /* Method signature(s) */
 };
 static const char* dst_blst_view_doc[] = {
-	"dst blacklist dump in human-readable format.",  /* Documentation string */
+	"dst blocklist dump in human-readable format.",  /* Documentation string */
 	0                               /* Method signature(s) */
 };
 static const char* dst_blst_delete_all_doc[] = {
-	"Deletes all the entries from the dst blacklist except the permanent ones.",  /* Documentation string */
+	"Deletes all the entries from the dst blocklist except the permanent ones.",  /* Documentation string */
 	0                               /* Method signature(s) */
 };
 static const char* dst_blst_add_doc[] = {
-	"Adds a new entry to the dst blacklist.",  /* Documentation string */
+	"Adds a new entry to the dst blocklist.",  /* Documentation string */
 	0                               /* Method signature(s) */
 };
-#ifdef USE_DST_BLACKLIST_STATS
+#ifdef USE_DST_BLOCKLIST_STATS
 void dst_blst_stats_get(rpc_t* rpc, void* ctx);
 
 static const char* dst_blst_stats_get_doc[] = {
-	"returns the dst blacklist measurement counters.",
+	"returns the dst blocklist measurement counters.",
 	0
 };
-#endif /* USE_DST_BLACKLIST_STATS */
+#endif /* USE_DST_BLOCKLIST_STATS */
 
 #endif
 
 
-
-#define MAX_CTIME_LEN 128
+#define MAX_CTIME_LEN 26
 
 /* up time */
 static char up_since_ctime[MAX_CTIME_LEN];
@@ -381,13 +380,14 @@ static void core_uptime(rpc_t* rpc, void* c)
 {
 	void* s;
 	time_t now;
+	char buf[MAX_CTIME_LEN];
 	str snow;
+	snow.s = buf;
 
 	time(&now);
 
 	if (rpc->add(c, "{", &s) < 0) return;
-	snow.s = ctime(&now);
-	if(snow.s) {
+	if(ctime_r(&now, snow.s)) {
 		snow.len = strlen(snow.s);
 		if(snow.len>2 && snow.s[snow.len-1]=='\n') snow.len--;
 		rpc->struct_add(s, "S", "now", &snow);
@@ -1090,7 +1090,7 @@ static rpc_export_t core_rpc_methods[] = {
 #endif
 	{"core.tcp_info",          core_tcpinfo,           core_tcpinfo_doc,    0},
 	{"core.tcp_options",       core_tcp_options,       core_tcp_options_doc,0},
-	{"core.tcp_list",          core_tcp_list,          core_tcp_list_doc,0},
+	{"core.tcp_list",          core_tcp_list,          core_tcp_list_doc, RET_ARRAY},
 	{"core.udp4_raw_info",     core_udp4rawinfo,       core_udp4rawinfo_doc,
 		0},
 	{"core.aliases_list",      core_aliases_list,      core_aliases_list_doc, 0},
@@ -1146,20 +1146,20 @@ static rpc_export_t core_rpc_methods[] = {
 		dns_get_server_state_doc, 0 },
 #endif
 #endif
-#ifdef USE_DST_BLACKLIST
-	{"dst_blacklist.mem_info",  dst_blst_mem_info,     dst_blst_mem_info_doc,
+#ifdef USE_DST_BLOCKLIST
+	{"dst_blocklist.mem_info",  dst_blst_mem_info,     dst_blst_mem_info_doc,
 		0	},
-	{"dst_blacklist.debug",    dst_blst_debug,         dst_blst_debug_doc,
+	{"dst_blocklist.debug",    dst_blst_debug,         dst_blst_debug_doc,
 		0	},
-	{"dst_blacklist.view",     dst_blst_view,         dst_blst_view_doc,
+	{"dst_blocklist.view",     dst_blst_view,         dst_blst_view_doc,
 		0	},
-	{"dst_blacklist.delete_all", dst_blst_delete_all, dst_blst_delete_all_doc,
+	{"dst_blocklist.delete_all", dst_blst_delete_all, dst_blst_delete_all_doc,
 		0	},
-	{"dst_blacklist.add",      dst_blst_add,          dst_blst_add_doc,
+	{"dst_blocklist.add",      dst_blst_add,          dst_blst_add_doc,
 		0	},
-#ifdef USE_DST_BLACKLIST_STATS
-	{"dst_blacklist.stats_get", dst_blst_stats_get, dst_blst_stats_get_doc, 0},
-#endif /* USE_DST_BLACKLIST_STATS */
+#ifdef USE_DST_BLOCKLIST_STATS
+	{"dst_blocklist.stats_get", dst_blst_stats_get, dst_blst_stats_get_doc, 0},
+#endif /* USE_DST_BLOCKLIST_STATS */
 #endif
 	{0, 0, 0, 0}
 };
@@ -1187,21 +1187,14 @@ error:
 
 int rpc_init_time(void)
 {
-	char *t;
-	t=ctime(&up_since);
-	if (strlen(t)+1>=MAX_CTIME_LEN) {
-		ERR("Too long data %d\n", (int)strlen(t));
+	char t[MAX_CTIME_LEN];
+	int len;
+	if (! ctime_r(&up_since, t)) {
+		ERR("Invalid time value\n");
 		return -1;
 	}
 	strcpy(up_since_ctime, t);
-	t = up_since_ctime + strlen(up_since_ctime);
-	while(t>up_since_ctime) {
-		if(*t=='\0' || *t=='\r' || *t=='\n') {
-			*t = '\0';
-		} else {
-			break;
-		}
-		t--;
-	}
+	len = strlen(up_since_ctime);
+	if(len>2 && up_since_ctime[len-1]=='\n') up_since_ctime[len-1]='\0';
 	return 0;
 }

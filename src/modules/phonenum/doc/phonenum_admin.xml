@@ -71,7 +71,7 @@
 	<section id="phonenum.p.smode">
 	    <title><varname>smode</varname> (int)</title>
 	    <para>
-		Phone number search mode.
+		Phone number search mode (not in use yet).
 	    </para>
 	    <para>
 		<emphasis>
@@ -87,7 +87,31 @@ modparam("phonenum", "smode", 0)
 </programlisting>
 	    </example>
 	</section>
-
+	<section id="phonenum.p.resid">
+	    <title><varname>resid</varname> (str)</title>
+	    <para>
+		Preregister result container id during initialization, enabling the use
+		of the module in KEMI scripts. In native &kamailio;.cfg file, registration
+		is done when parsing config and finding variables.
+	    </para>
+	    <para>
+		<emphasis>
+		    Default value is <quote></quote> (empty).
+		</emphasis>
+	    </para>
+	    <example>
+		<title>Set <varname>resid</varname> parameter</title>
+		<programlisting format="linespecific">
+...
+modparam("phonenum", "resid", "src")
+...
+if(phonenum_match("1-484-555-8888", "src")) {
+   ...
+}
+...
+</programlisting>
+	    </example>
+	</section>
 	</section>
 
     <section>
@@ -98,7 +122,7 @@ modparam("phonenum", "smode", 0)
 	    </title>
 	    <para>
 			Match num against the libphonenumber and set the attributes inside
-			the pvc container. The function has to be called before accessing
+			the pvc result container. The function has to be called before accessing
 			a key via: $phn(pvc=&gt;key).
 	    </para>
 	    <para>
@@ -131,6 +155,14 @@ if(phonenum_match("1-484-555-8888", "src")) {
 			the pvc container, restricting the rules with a country name code
 			(two letter, e.g: "DE", "US", "ES"). The function has to be called
 			before accessing a key via: $phn(pvc=&gt;key).
+	    </para>
+	    <para>
+			Note from libphonenumber library docs: country name code is the region
+			that is expected the number to be from. It is only used if the number
+			being parsed is not written in international format. The country code
+			for the number in this case would be stored as that of the region
+			supplied. If the number is guaranteed to start with a '+' followed
+			by the country calling code, then region 'ZZ'.
 	    </para>
 	    <para>
 			The parameters can be static strings or strings with variables.

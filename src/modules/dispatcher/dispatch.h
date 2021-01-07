@@ -57,6 +57,7 @@
 #define DS_MATCH_ALL		0
 #define DS_MATCH_NOPORT		1
 #define DS_MATCH_NOPROTO	2
+#define DS_MATCH_ACTIVE 	4
 
 #define DS_SETOP_DSTURI		0
 #define DS_SETOP_RURI		1
@@ -66,12 +67,19 @@
 #define DS_USE_NEXT			1
 
 #define DS_XAVP_DST_SKIP_ATTRS	1
+#define DS_XAVP_DST_ADD_SOCKSTR	(1<<1)
+#define DS_XAVP_DST_ADD_SOCKNAME	(1<<2)
 
 #define DS_XAVP_CTX_SKIP_CNT	1
 
 #define DS_IRMODE_NOIPADDR	1
-
 /* clang-format on */
+
+typedef struct ds_rctx {
+	int flags;
+	int code;
+	str reason;
+} ds_rctx_t;
 
 extern str ds_db_url;
 extern str ds_table_name;
@@ -94,6 +102,8 @@ extern str ds_xavp_dst_grp;
 extern str ds_xavp_dst_dstid;
 extern str ds_xavp_dst_attrs;
 extern str ds_xavp_dst_sock;
+extern str ds_xavp_dst_socket;
+extern str ds_xavp_dst_sockname;
 
 extern str ds_xavp_ctx_cnt;
 
@@ -115,6 +125,7 @@ extern int inactive_threshold; /*!< number of successful requests,
 extern int ds_probing_mode;
 extern str ds_outbound_proxy;
 extern str ds_default_socket;
+extern str ds_default_sockname;
 extern struct socket_info *ds_default_sockinfo;
 
 int ds_init_data(void);
@@ -129,11 +140,13 @@ int ds_select_dst_limit(sip_msg_t *msg, int set, int alg, uint32_t limit,
 		int mode);
 int ds_select_dst(struct sip_msg *msg, int set, int alg, int mode);
 int ds_update_dst(struct sip_msg *msg, int upos, int mode);
-int ds_add_dst(int group, str *address, int flags);
+int ds_add_dst(int group, str *address, int flags, str *attrs);
 int ds_remove_dst(int group, str *address);
-int ds_update_state(sip_msg_t *msg, int group, str *address, int state);
+int ds_update_state(sip_msg_t *msg, int group, str *address, int state,
+		ds_rctx_t *rctx);
 int ds_reinit_state(int group, str *address, int state);
 int ds_reinit_state_all(int group, int state);
+int ds_reinit_duid_state(int group, str *vduid, int state);
 int ds_mark_dst(struct sip_msg *msg, int mode);
 int ds_print_list(FILE *fout);
 int ds_log_sets(void);
@@ -170,11 +183,14 @@ typedef struct _ds_attrs {
 	str body;
 	str duid;
 	str socket;
+	str sockname;
 	int maxload;
 	int weight;
 	int rweight;
 	int congestion_control;
 	str ping_from;
+	str obproxy;
+	int rpriority;
 } ds_attrs_t;
 
 typedef struct _ds_latency_stats {
@@ -188,6 +204,8 @@ typedef struct _ds_latency_stats {
 	int32_t count;
 	uint32_t timeout;
 } ds_latency_stats_t;
+
+void latency_stats_init(ds_latency_stats_t *latency_stats, int latency, int count);
 
 typedef struct _ds_dest {
 	str uri;          /*!< address/uri */
@@ -255,5 +273,8 @@ ds_set_t *ds_avl_find(ds_set_t *node, int id);
 void ds_avl_destroy(ds_set_t **node);
 
 int ds_manage_routes(sip_msg_t *msg, ds_select_state_t *rstate);
+
+ds_rctx_t* ds_get_rctx(void);
+unsigned int ds_get_hash(str *x, str *y);
 
 #endif

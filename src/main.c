@@ -30,6 +30,12 @@
  * sip router core part.
  */
 
+#ifdef KSR_PTHREAD_MUTEX_SHARED
+#define _GNU_SOURCE
+#include <pthread.h>
+#include <dlfcn.h>
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -72,6 +78,7 @@
 #include "core/mem/shm_mem.h"
 #include "core/shm_init.h"
 #include "core/sr_module.h"
+#include "core/modparam.h"
 #include "core/timer.h"
 #include "core/parser/msg_parser.h"
 #include "core/ip_addr.h"
@@ -113,13 +120,13 @@
 #ifdef USE_DNS_CACHE
 #include "core/dns_cache.h"
 #endif
-#ifdef USE_DST_BLACKLIST
-#include "core/dst_blacklist.h"
+#ifdef USE_DST_BLOCKLIST
+#include "core/dst_blocklist.h"
 #endif
 #include "core/rand/fastrand.h" /* seed */
 #include "core/rand/kam_rand.h"
+#include "core/rand/cryptorand.h"
 
-#include "core/stats.h"
 #include "core/counters.h"
 #include "core/cfg/cfg.h"
 #include "core/cfg/cfg_struct.h"
@@ -157,11 +164,14 @@ Options:\n\
                   disable with no or off\n\
     --alias=val  Add an alias, the value has to be '[proto:]hostname[:port]'\n\
                   (like for 'alias' global parameter)\n\
-    -A define    Add config pre-processor define (e.g., -A WITH_AUTH)\n\
+    -A define    Add config pre-processor define (e.g., -A WITH_AUTH,\n\
+                  -A 'FLT_ACC=1', -A 'DEFVAL=\"str-val\"')\n\
     -b nr        Maximum receive buffer size which will not be exceeded by\n\
                   auto-probing procedure even if  OS allows\n\
     -c           Check configuration file for syntax errors\n\
-    -d           Debugging mode (multiple -d increase the level)\n\
+    --cfg-print  Print configuration file evaluating includes and ifdefs\n\
+    -d           Debugging level control (multiple -d to increase the level from 0)\n\
+    --debug=val  Debugging level value\n\
     -D           Control how daemonize is done:\n\
                   -D..do not fork (almost) anyway;\n\
                   -DD..do not daemonize creator;\n\
@@ -176,15 +186,23 @@ Options:\n\
     -I           Print more internal compile flags and options\n\
     -K           Turn on \"via:\" host checking when forwarding replies\n\
     -l address   Listen on the specified address/interface (multiple -l\n\
-                  mean listening on more addresses).  The address format is\n\
-                  [proto:]addr_lst[:port], where proto=udp|tcp|tls|sctp, \n\
-                  addr_lst= addr|(addr, addr_lst) and \n\
-                  addr= host|ip_address|interface_name. \n\
+                  mean listening on more addresses). The address format is\n\
+                  [proto:]addr_lst[:port][/advaddr], \n\
+                  where proto=udp|tcp|tls|sctp, \n\
+                  addr_lst= addr|(addr, addr_lst), \n\
+                  addr=host|ip_address|interface_name and \n\
+                  advaddr=addr[:port] (advertised address). \n\
                   E.g: -l localhost, -l udp:127.0.0.1:5080, -l eth0:5062,\n\
+                  -l udp:127.0.0.1:5080/1.2.3.4:5060,\n\
                   -l \"sctp:(eth0)\", -l \"(eth0, eth1, 127.0.0.1):5065\".\n\
                   The default behaviour is to listen on all the interfaces.\n\
+    --loadmodule=name load the module specified by name\n\
+    --log-engine=log engine name and data\n\
     -L path      Modules search path (default: " MODS_DIR ")\n\
     -m nr        Size of shared memory allocated in Megabytes\n\
+    --modparam=modname:paramname:type:value set the module parameter\n\
+                  type has to be 's' for string value and 'i' for int value, \n\
+                  example: --modparam=corex:alias_subdomains:s:" NAME ".org\n\
     -M nr        Size of private memory allocated, in Megabytes\n\
     -n processes Number of child processes to fork per interface\n\
                   (default: 8)\n"
@@ -200,9 +218,10 @@ Options:\n\
                   field to a via\n\
     -R           Same as `-r` but use reverse dns;\n\
                   (to use both use `-rR`)\n"
-#ifdef STATS
-"    -s file     File where to write internal statistics on SIGUSR1\n"
-#endif
+"    --server-id=num set the value for server_id\n\
+    --subst=exp set a subst preprocessor directive\n\
+    --substdef=exp set a substdef preprocessor directive\n\
+    --substdefs=exp set a substdefs preprocessor directive\n"
 #ifdef USE_SCTP
 "    -S           disable sctp\n"
 #endif
@@ -266,6 +285,7 @@ void print_internals(void)
 #endif
 	printf("  Source code revision ID: %s\n", ver_id);
 	printf("  Compiled with: %s\n", ver_compiler);
+	printf("  Compiled architecture: %s\n", ARCH);
 	printf("  Compiled on: %s\n", ver_compiled_time);
 	printf("Thank you for flying %s!\n", NAME);
 }
@@ -426,6 +446,7 @@ int tos = IPTOS_LOWDELAY;
 int pmtu_discovery = 0;
 
 int auto_bind_ipv6 = 0;
+int sr_bind_ipv6_link_local = 0;
 
 struct socket_info* udp_listen=0;
 #ifdef USE_TCP
@@ -513,6 +534,8 @@ char *sr_memmng_shm = NULL;
 
 static int *_sr_instance_started = NULL;
 
+int ksr_cfg_print_mode = 0;
+
 /**
  * return 1 if all child processes were forked
  * - note: they might still be in init phase (i.e., child init)
@@ -544,8 +567,8 @@ void cleanup(int show_status)
 #ifdef USE_DNS_CACHE
 	destroy_dns_cache();
 #endif
-#ifdef USE_DST_BLACKLIST
-	destroy_dst_blacklist();
+#ifdef USE_DST_BLOCKLIST
+	destroy_dst_blocklist();
 #endif
 	/* restore the original core configuration before the
 	 * config block is freed, otherwise even logging is unusable,
@@ -671,6 +694,8 @@ static void sig_alarm_abort(int signo)
 
 static void shutdown_children(int sig, int show_status)
 {
+	sr_corecb_void_exec(app_shutdown);
+
 	kill_all_children(sig);
 	if (set_sig_h(SIGALRM, sig_alarm_kill) == SIG_ERR ) {
 		LM_ERR("could not install SIGALARM handler\n");
@@ -717,9 +742,6 @@ void handle_sigs(void)
 			break;
 
 		case SIGUSR1:
-#ifdef STATS
-			dump_all_statistic();
-#endif
 		memlog=cfg_get(core, core_cfg, memlog);
 #ifdef PKG_MALLOC
 		if (memlog <= cfg_get(core, core_cfg, debug)){
@@ -775,14 +797,12 @@ void handle_sigs(void)
 				break;
 			}
 
-#ifndef STOP_JIRIS_CHANGES
 			if (dont_fork) {
 				LM_INFO("dont_fork turned on, living on\n");
 				break;
 			}
 			LM_INFO("terminating due to SIGCHLD\n");
-#endif
-			LM_DBG("terminating due to SIGCHLD\n");
+
 			/* exit */
 			shutdown_children(SIGTERM, 1);
 			if (WIFSIGNALED(chld_status)) {
@@ -811,9 +831,10 @@ void handle_sigs(void)
 */
 void sig_usr(int signo)
 {
-
+#ifdef SIG_DEBUG
 #ifdef PKG_MALLOC
 	int memlog;
+#endif
 #endif
 
 	if (is_main){
@@ -837,7 +858,7 @@ void sig_usr(int signo)
 #ifdef SIG_DEBUG /* signal unsafe stuff follows */
 					LM_INFO("signal %d received\n", signo);
 					/* print memory stats for non-main too */
-					#ifdef PKG_MALLOC
+#ifdef PKG_MALLOC
 					/* make sure we have current cfg values, but update only
 					  the safe part (values not requiring callbacks), to
 					  account for processes that might not have registered
@@ -855,11 +876,13 @@ void sig_usr(int signo)
 							pkg_sums();
 						}
 					}
-					#endif
+#endif
 #endif
 					_exit(0);
 					break;
 			case SIGUSR1:
+#ifdef SIG_DEBUG /* signal unsafe stuff follows */
+					LM_INFO("signal %d received\n", signo);
 #ifdef PKG_MALLOC
 					cfg_update_no_cbs();
 					memlog=cfg_get(core, core_cfg, memlog);
@@ -874,19 +897,19 @@ void sig_usr(int signo)
 						}
 					}
 #endif
+#endif
 					break;
 				/* ignored*/
 			case SIGUSR2:
 			case SIGHUP:
+#ifdef SIG_DEBUG /* signal unsafe stuff follows */
+					LM_INFO("signal %d received - ignoring\n", signo);
+#endif
 					break;
 			case SIGCHLD:
-#ifndef 			STOP_JIRIS_CHANGES
 #ifdef SIG_DEBUG /* signal unsafe stuff follows */
 					LM_DBG("SIGCHLD received: "
 						"we do not worry about grand-children\n");
-#endif
-#else
-					_exit(0); /* terminate if one child died */
 #endif
 					break;
 		}
@@ -1300,9 +1323,6 @@ int main_loop(void)
 	}
 	/* one "main" process and n children handling i/o */
 	if (dont_fork){
-#ifdef STATS
-		setstats( 0 );
-#endif
 		if (udp_listen==0){
 			LM_ERR("no fork mode requires at least one"
 					" udp listen address, exiting...\n");
@@ -1431,6 +1451,7 @@ int main_loop(void)
 					if (arm_timer()<0) goto error;
 					timer_main();
 				}else{
+					/* do nothing for main timer */
 				}
 
 		if(sr_wtimer_start()<0) {
@@ -1568,12 +1589,20 @@ int main_loop(void)
 				/* get first ipv4/ipv6 socket*/
 				if ((si->address.af==AF_INET)&&
 						((sendipv4_tls==0) ||
-							(sendipv4_tls->flags&(SI_IS_LO|SI_IS_MCAST))))
+						 (sendipv4_tls->flags&(SI_IS_LO|SI_IS_MCAST)))) {
 					sendipv4_tls=si;
+					if(sendipv4_tcp==0) {
+						sendipv4_tcp=si;
+					}
+				}
 				if( ((sendipv6_tls==0) ||
 							(sendipv6_tls->flags&(SI_IS_LO|SI_IS_MCAST))) &&
-						(si->address.af==AF_INET6))
+						(si->address.af==AF_INET6)) {
 					sendipv6_tls=si;
+					if(sendipv6_tcp==0) {
+						sendipv6_tcp=si;
+					}
+				}
 			}
 		}
 #endif /* USE_TLS */
@@ -1650,9 +1679,7 @@ int main_loop(void)
 				}else if (pid==0){
 					/* child */
 					bind_address=si; /* shortcut */
-#ifdef STATS
-					setstats( i+r*children_no );
-#endif
+
 					if(woneinit==0) {
 						if(run_child_one_init_route()<0)
 							goto error;
@@ -1687,9 +1714,7 @@ int main_loop(void)
 					}else if (pid==0){
 						/* child */
 						bind_address=si; /* shortcut */
-#ifdef STATS
-						setstats( i+r*children_no );
-#endif
+
 						return sctp_core_rcv_loop();
 					}
 				}
@@ -1748,7 +1773,7 @@ int main_loop(void)
 		if (!tcp_disable){
 				/* start tcp  & tls receivers */
 			if (tcp_init_children()<0) goto error;
-				/* start tcp+tls master proc */
+				/* start tcp+tls main attendant proc */
 			pid = fork_process(PROC_TCP_MAIN, "tcp main process", 0);
 			if (pid<0){
 				LM_CRIT("cannot fork tcp main process: %s\n", strerror(errno));
@@ -1776,6 +1801,7 @@ int main_loop(void)
 		cfg_ok=1;
 
 		*_sr_instance_started = 1;
+		sr_corecb_void_exec(app_ready);
 
 #ifdef EXTRA_DEBUG
 		for (r=0; r<*process_count; r++){
@@ -1879,6 +1905,8 @@ int main(int argc, char** argv)
 	int tmp_len;
 	int port;
 	int proto;
+	char *ahost = NULL;
+	int aport = 0;
 	char *options;
 	int ret;
 	unsigned int seed;
@@ -1889,6 +1917,9 @@ int main(int argc, char** argv)
 	char *p;
 	struct stat st = {0};
 
+#define KSR_TBUF_SIZE 512
+	char tbuf[KSR_TBUF_SIZE];
+
 	int option_index = 0;
 
 #define KARGOPTVAL	1024
@@ -1897,7 +1928,16 @@ int main(int argc, char** argv)
 		{"help",  no_argument, 0, 'h'},
 		{"version",  no_argument, 0, 'v'},
 		/* long options without short variant */
-		{"alias",  required_argument, 0, KARGOPTVAL},
+		{"alias",       required_argument, 0, KARGOPTVAL},
+		{"subst",       required_argument, 0, KARGOPTVAL + 1},
+		{"substdef",    required_argument, 0, KARGOPTVAL + 2},
+		{"substdefs",   required_argument, 0, KARGOPTVAL + 3},
+		{"server-id",   required_argument, 0, KARGOPTVAL + 4},
+		{"loadmodule",  required_argument, 0, KARGOPTVAL + 5},
+		{"modparam",    required_argument, 0, KARGOPTVAL + 6},
+		{"log-engine",  required_argument, 0, KARGOPTVAL + 7},
+		{"debug",       required_argument, 0, KARGOPTVAL + 8},
+		{"cfg-print",   no_argument,       0, KARGOPTVAL + 9},
 		{0, 0, 0, 0 }
 	};
 
@@ -1909,17 +1949,14 @@ int main(int argc, char** argv)
 	debug_flag=0;
 	dont_fork_cnt=0;
 
+	ksr_hname_init_index();
 	sr_cfgenv_init();
 	daemon_status_init();
 
 	dprint_init_colors();
 
 	/* command line options */
-	options=  ":f:cm:M:dVIhEeb:l:L:n:vKrRDTN:W:w:t:u:g:P:G:SQ:O:a:A:x:X:Y:"
-#ifdef STATS
-		"s:"
-#endif
-	;
+	options=  ":f:cm:M:dVIhEeb:l:L:n:vKrRDTN:W:w:t:u:g:P:G:SQ:O:a:A:x:X:Y:";
 	/* Handle special command line arguments, that must be treated before
 	 * intializing the various subsystem or before parsing other arguments:
 	 *  - get the startup debug and log_stderr values
@@ -1960,6 +1997,21 @@ int main(int argc, char** argv)
 			case 'X':
 					sr_memmng_pkg = optarg;
 					break;
+			case KARGOPTVAL+7:
+					ksr_slog_init(optarg);
+					break;
+			case KARGOPTVAL+8:
+					debug_flag = 1;
+					default_core_cfg.debug=(int)strtol(optarg, &tmp, 10);
+					if ((tmp==0) || (*tmp)){
+						LM_ERR("bad debug level value: %s\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+9:
+					ksr_cfg_print_mode = 1;
+					break;
+
 			default:
 					if (c == 'h' || (optarg && strcmp(optarg, "-h") == 0)) {
 						printf("version: %s\n", full_version);
@@ -2117,6 +2169,11 @@ int main(int argc, char** argv)
 			case 'a':
 			case 's':
 			case 'Y':
+			case KARGOPTVAL+5:
+			case KARGOPTVAL+6:
+			case KARGOPTVAL+7:
+			case KARGOPTVAL+8:
+			case KARGOPTVAL+9:
 					break;
 
 			/* long options */
@@ -2128,6 +2185,31 @@ int main(int argc, char** argv)
 					}
 					if(add_alias(tmp, tmp_len, port, proto)<0) {
 						fprintf(stderr, "Failed to add alias value '%s'\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+1:
+					if(pp_subst_add(optarg)<0) {
+						LM_ERR("failed to add subst expression: %s\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+2:
+					if(pp_substdef_add(optarg, 0)<0) {
+						LM_ERR("failed to add substdef expression: %s\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+3:
+					if(pp_substdef_add(optarg, 1)<0) {
+						LM_ERR("failed to add substdefs expression: %s\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+4:
+					server_id=(int)strtol(optarg, &tmp, 10);
+					if ((tmp==0) || (*tmp)){
+						LM_ERR("bad server_id value: %s\n", optarg);
 						goto error;
 					}
 					break;
@@ -2179,6 +2261,29 @@ int main(int argc, char** argv)
 	/* Fix the value of cfg_file variable.*/
 	if (fix_cfg_file() < 0) goto error;
 
+	/* process command line parameters that require initialized basic environment */
+	optind = 1;  /* reset getopt index */
+	option_index = 0;
+	/* switches required before config parsing and processing */
+	while((c=getopt_long(argc, argv, options, long_options, &option_index))!=-1) {
+		switch(c) {
+			case KARGOPTVAL+5:
+					if (load_module(optarg)!=0) {
+						LM_ERR("failed to load the module: %s\n", optarg);
+						goto error;
+					}
+					break;
+			case KARGOPTVAL+6:
+					if(set_mod_param_serialized(optarg) < 0) {
+						LM_ERR("failed to set modparam: %s\n", optarg);
+						goto error;
+					}
+					break;
+			default:
+					break;
+		}
+	}
+
 	/* load config file or die */
 	if (cfg_file[0] == '-' && strlen(cfg_file)==1) {
 		cfg_stream=stdin;
@@ -2186,7 +2291,8 @@ int main(int argc, char** argv)
 		cfg_stream=fopen (cfg_file, "r");
 	}
 	if (cfg_stream==0){
-		fprintf(stderr, "ERROR: loading config file(%s): %s\n", cfg_file,
+		fprintf(stderr, "ERROR: loading config file(%s): %s,"
+				" check file and directory permissions\n", cfg_file,
 				strerror(errno));
 		goto error;
 	}
@@ -2207,10 +2313,11 @@ try_again:
 	}
 	seed+=getpid()+time(0);
 	LM_DBG("seeding PRNG with %u\n", seed);
-	kam_srand(seed);
-	fastrand_seed(kam_rand());
-	srandom(kam_rand()+time(0));
-	LM_DBG("test random numbers %u %lu %u\n", kam_rand(), random(), fastrand());
+	cryptorand_seed(seed);
+	fastrand_seed(cryptorand());
+	kam_srand(cryptorand());
+	srandom(cryptorand());
+	LM_DBG("test random numbers %u %lu %u %u\n", kam_rand(), random(), fastrand(), cryptorand());
 
 	/*register builtin  modules*/
 	register_builtin_modules();
@@ -2220,18 +2327,25 @@ try_again:
 
 	yyin=cfg_stream;
 	debug_save = default_core_cfg.debug;
-	if ((yyparse()!=0)||(cfg_errors)){
-		fprintf(stderr, "ERROR: bad config file (%d errors)\n", cfg_errors);
+	ksr_cfg_print_initial_state();
+	r = yyparse();
+	if (ksr_cfg_print_mode == 1) {
+		/* printed evaluated content of config file based on include and ifdef */
+		return 0;
+	}
+	if ((r!=0)||(cfg_errors)||(pp_ifdef_level_check()<0)){
+		fprintf(stderr, "ERROR: bad config file (%d errors) (parsing code: %d)\n",
+				cfg_errors, r);
 		if (debug_flag) default_core_cfg.debug = debug_save;
-		pp_ifdef_level_check();
+		pp_ifdef_level_error();
 
 		goto error;
 	}
+
 	if (cfg_warnings){
 		fprintf(stderr, "%d config warnings\n", cfg_warnings);
 	}
 	if (debug_flag) default_core_cfg.debug = debug_save;
-	pp_ifdef_level_check();
 	print_rls();
 
 	if(init_dst_set()<0) {
@@ -2286,7 +2400,38 @@ try_again:
 				#endif
 					break;
 			case 'l':
-					if ((n_lst=parse_phostport_mh(optarg, &tmp, &tmp_len,
+					p = strrchr(optarg, '/');
+					if(p==NULL) {
+						p = optarg;
+					} else {
+						if(strlen(optarg)>=KSR_TBUF_SIZE-1) {
+							fprintf(stderr, "listen value too long: %s\n",
+									optarg);
+							goto error;
+						}
+						strcpy(tbuf, optarg);
+						p = strrchr(tbuf, '/');
+						if(p==NULL) {
+							fprintf(stderr, "unexpected bug for listen: %s\n",
+									optarg);
+							goto error;
+						}
+						*p = '\0';
+						p++;
+						tmp_len = 0;
+						if(parse_phostport(p, &ahost, &tmp_len, &aport,
+									&proto)<0)
+						{
+							fprintf(stderr, "listen value with invalid advertise: %s\n",
+									optarg);
+							goto error;
+						}
+						if(ahost) {
+							ahost[tmp_len] = '\0';
+						}
+						p = tbuf;
+					}
+					if ((n_lst=parse_phostport_mh(p, &tmp, &tmp_len,
 											&port, &proto))==0){
 						fprintf(stderr, "bad -l address specifier: %s\n"
 											"Check disabled protocols\n",
@@ -2294,9 +2439,10 @@ try_again:
 						goto error;
 					}
 					/* add a new addr. to our address list */
-					if (add_listen_iface(n_lst->name, n_lst->next,  port,
-											proto, n_lst->flags)!=0){
-						fprintf(stderr, "failed to add new listen address\n");
+					if (add_listen_advertise_iface(n_lst->name, n_lst->next,  port,
+											proto, ahost, aport, n_lst->flags)!=0){
+						fprintf(stderr, "failed to add new listen address: %s\n",
+								optarg);
 						free_name_lst(n_lst);
 						goto error;
 					}
@@ -2401,11 +2547,6 @@ try_again:
 						goto error;
 					}
 					break;
-			case 's':
-				#ifdef STATS
-					stat_file=optarg;
-				#endif
-					break;
 			default:
 					break;
 		}
@@ -2418,8 +2559,12 @@ try_again:
 	if (ksr_route_locks_set_init()<0)
 		goto error;
 
+	ksr_shutdown_phase_init();
+
 	/* init lookup for core event routes */
 	sr_core_ert_init();
+
+	ksr_hname_init_config();
 
 	if (dont_fork_cnt)
 		dont_fork = dont_fork_cnt;	/* override by command line */
@@ -2499,8 +2644,8 @@ try_again:
 	/* create runtime dir if doesn't exist */
 	if (stat(runtime_dir, &st) == -1) {
 		if(mkdir(runtime_dir, 0700) == -1) {
-			LM_ERR("failed to create runtime dir %s\n", runtime_dir);
-			fprintf(stderr,  "failed to create runtime dir %s\n", runtime_dir);
+			LM_ERR("failed to create runtime dir %s, check directory permissions\n", runtime_dir);
+			fprintf(stderr, "failed to create runtime dir %s, check directory permissions\n", runtime_dir);
 			goto error;
 		}
 		if(sock_uid!=-1 || sock_gid!=-1) {
@@ -2603,18 +2748,18 @@ try_again:
 	}
 #endif /* USE_DNS_CACHE_STATS */
 #endif
-#ifdef USE_DST_BLACKLIST
-	if (init_dst_blacklist()<0){
-		LM_CRIT("could not initialize the dst blacklist, exiting...\n");
+#ifdef USE_DST_BLOCKLIST
+	if (init_dst_blocklist()<0){
+		LM_CRIT("could not initialize the dst blocklist, exiting...\n");
 		goto error;
 	}
-#ifdef USE_DST_BLACKLIST_STATS
+#ifdef USE_DST_BLOCKLIST_STATS
 	/* preinitializing before the number of processes is determined */
-	if (init_dst_blacklist_stats(1)<0){
-		LM_CRIT("could not initialize the dst blacklist measurement\n");
+	if (init_dst_blocklist_stats(1)<0){
+		LM_CRIT("could not initialize the dst blocklist measurement\n");
 		goto error;
 	}
-#endif /* USE_DST_BLACKLIST_STATS */
+#endif /* USE_DST_BLOCKLIST_STATS */
 #endif
 	if (init_avps()<0) goto error;
 	if (rpc_init_time() < 0) goto error;
@@ -2716,9 +2861,9 @@ try_again:
 		goto error;
 	}
 #endif
-#if defined USE_DST_BLACKLIST && defined USE_DST_BLACKLIST_STATS
-	if (init_dst_blacklist_stats(get_max_procs())<0){
-		LM_CRIT("could not initialize the dst blacklist measurement\n");
+#if defined USE_DST_BLOCKLIST && defined USE_DST_BLOCKLIST_STATS
+	if (init_dst_blocklist_stats(get_max_procs())<0){
+		LM_CRIT("could not initialize the dst blocklist measurement\n");
 		goto error;
 	}
 #endif
@@ -2729,10 +2874,6 @@ try_again:
 		goto error;
 	};
 	fixup_complete=1;
-
-#ifdef STATS
-	if (init_stats(  dont_fork ? 1 : children_no  )==-1) goto error;
-#endif
 
 	ret=main_loop();
 	if (ret < 0)
@@ -2757,3 +2898,72 @@ error:
 	}
 	return -1;
 }
+
+
+#ifdef KSR_PTHREAD_MUTEX_SHARED
+
+/**
+ * code to set PTHREAD_PROCESS_SHARED attribute for phtread mutex to cope
+ * with libssl 1.1+ thread-only mutex initialization
+ */
+
+#define SYMBOL_EXPORT __attribute__((visibility("default")))
+
+int SYMBOL_EXPORT pthread_mutex_init (pthread_mutex_t *__mutex,
+		const pthread_mutexattr_t *__mutexattr)
+{
+	static int (*real_pthread_mutex_init)(pthread_mutex_t *__mutex,
+			const pthread_mutexattr_t *__mutexattr) = 0;
+	pthread_mutexattr_t attr;
+	int ret;
+
+	if (!real_pthread_mutex_init) {
+		real_pthread_mutex_init = dlsym(RTLD_NEXT, "pthread_mutex_init");
+		if (!real_pthread_mutex_init) {
+			return -1;
+		}
+	}
+
+	if (__mutexattr) {
+		pthread_mutexattr_t attr = *__mutexattr;
+		pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+		return real_pthread_mutex_init(__mutex, &attr);
+	}
+
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+	ret = real_pthread_mutex_init(__mutex, &attr);
+	pthread_mutexattr_destroy(&attr);
+
+	return ret;
+}
+
+int SYMBOL_EXPORT pthread_rwlock_init (pthread_rwlock_t *__restrict __rwlock,
+				const pthread_rwlockattr_t *__restrict __attr)
+{
+	static int (*real_pthread_rwlock_init)(pthread_rwlock_t *__restrict __rwlock,
+				const pthread_rwlockattr_t *__restrict __attr) = 0;
+	pthread_rwlockattr_t attr;
+	int ret;
+
+	if (!real_pthread_rwlock_init) {
+		real_pthread_rwlock_init = dlsym(RTLD_NEXT, "pthread_rwlock_init");
+		if (!real_pthread_rwlock_init) {
+			return -1;
+		}
+	}
+
+	if (__attr) {
+		pthread_rwlockattr_t attr = *__attr;
+		pthread_rwlockattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+		return real_pthread_rwlock_init(__rwlock, &attr);
+	}
+
+	pthread_rwlockattr_init(&attr);
+	pthread_rwlockattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+	ret = real_pthread_rwlock_init(__rwlock, &attr);
+	pthread_rwlockattr_destroy(&attr);
+
+	return ret;
+}
+#endif

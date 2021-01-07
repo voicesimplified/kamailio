@@ -11,13 +11,9 @@ Elena-Ramona Modroiu
 
    <ramona@rosdev.ro>
 
-Edited by
-
 Alex Balashov
 
    <abalashov@evaristesys.com>
-
-Edited by
 
 Ovidiu Sas
 
@@ -70,8 +66,10 @@ Ovidiu Sas
               4.10. sht_iterator_start(iname, hname)
               4.11. sht_iterator_end(iname)
               4.12. sht_iterator_next(iname)
-              4.13. sht_has_name(htable, op, mval)
-              4.14. sht_has_str_value(htable, op, mval)
+              4.13. sht_match_name(htable, op, mval)
+              4.14. sht_has_name(htable, op, mval)
+              4.15. sht_match_str_value(htable, op, mval)
+              4.16. sht_has_str_value(htable, op, mval)
 
         5. Exported pseudo-variables
         6. RPC Commands
@@ -82,9 +80,10 @@ Ovidiu Sas
               6.4. htable.seti htable key value
               6.5. htable.dump htable
               6.6. htable.reload htable
-              6.7. htable.flush htable
-              6.8. htable.listTables
-              6.9. htable.stats
+              6.7. htable.store htable
+              6.8. htable.flush htable
+              6.9. htable.listTables
+              6.10. htable.stats
 
         7. Event routes
 
@@ -96,7 +95,7 @@ Ovidiu Sas
    1.1. Accessing $sht(htname=>key)
    1.2. Dictionary attack limitation
    1.3. Storing array values
-   1.4. Set hash_size parameter
+   1.4. Set htable parameter
    1.5. Set db_url parameter
    1.6. Set key_name_column parameter
    1.7. Set key_type_column parameter
@@ -124,8 +123,8 @@ Ovidiu Sas
    1.29. sht_iterator_start usage
    1.30. sht_iterator_end usage
    1.31. sht_iterator_next usage
-   1.32. sht_has_name usage
-   1.33. sht_has_name usage
+   1.32. sht_match_name usage
+   1.33. sht_match_name usage
 
 Chapter 1. Admin Guide
 
@@ -171,8 +170,10 @@ Chapter 1. Admin Guide
         4.10. sht_iterator_start(iname, hname)
         4.11. sht_iterator_end(iname)
         4.12. sht_iterator_next(iname)
-        4.13. sht_has_name(htable, op, mval)
-        4.14. sht_has_str_value(htable, op, mval)
+        4.13. sht_match_name(htable, op, mval)
+        4.14. sht_has_name(htable, op, mval)
+        4.15. sht_match_str_value(htable, op, mval)
+        4.16. sht_has_str_value(htable, op, mval)
 
    5. Exported pseudo-variables
    6. RPC Commands
@@ -183,9 +184,10 @@ Chapter 1. Admin Guide
         6.4. htable.seti htable key value
         6.5. htable.dump htable
         6.6. htable.reload htable
-        6.7. htable.flush htable
-        6.8. htable.listTables
-        6.9. htable.stats
+        6.7. htable.store htable
+        6.8. htable.flush htable
+        6.9. htable.listTables
+        6.10. htable.stats
 
    7. Event routes
 
@@ -442,11 +444,17 @@ $ kamcmd htable.dump htable
    configuration file.
      * htname - string specifying the name of the hash table. This string
        is used by $sht(...) to refer to the hash table.
-     * size - number specifying the size of hash table. Larger value means
-       less collisions. The number of entries (aka slots or buckets) in
-       the table is 2^size. The possible range for this value is from 2 to
-       31, smaller or larger values will be increased to 3 (8 slots) or
-       decreased to 14 (16384 slots).
+     * size - number to control how many slots (buckets) to create for the
+       hash table. Larger value means more slots with higher probability
+       for less collisions. The actual number slots (or buckets) created
+       for the table is 2^size. The possible range for this value is from
+       2 to 31, smaller or larger values will be increased to 3 (8 slots)
+       or decreased to 14 (16384 slots). Note that each slot can store
+       more than one item, when there are collisions of hash ids computed
+       for keys. The items in the same slot are stored in a linked list.
+       In other words, the size is not setting a limit of how many items
+       can be stored in a hash table, as long as there is enough free
+       shared memory, new items can be added.
      * autoexpire -time in seconds to delete an item from a hash table if
        no update was done to it. If is missing or set to 0, the items
        won't expire.
@@ -481,7 +489,7 @@ $ kamcmd htable.dump htable
 
    Default value is NULL.
 
-   Example 1.4. Set hash_size parameter
+   Example 1.4. Set htable parameter
 ...
 modparam("htable", "htable", "a=>size=4;autoexpire=7200;dbtable=htable_a;")
 modparam("htable", "htable", "b=>size=5;")
@@ -592,9 +600,14 @@ modparam("htable", "timer_interval", 10)
 
 3.11. db_expires (integer)
 
-   If set to 1, the module will load/save the expires values of the items
+   If set to 1, the module loads/saves the value for expire of the items
    in hash table from/to database. It applies only to hash tables that
-   have the auto-expires attribute defined.
+   have the auto-expires attribute defined. If set to 0, only the key name
+   and the value are loaded, the expires for each item being set to 0.
+
+   Note that the module is not reloading automatically the items from
+   database when they expire, the reloading can be done only via RPC
+   command.
 
    Default value is 0.
 
@@ -705,8 +718,10 @@ modparam("htable", "event_callback_mode", 1)
    4.10. sht_iterator_start(iname, hname)
    4.11. sht_iterator_end(iname)
    4.12. sht_iterator_next(iname)
-   4.13. sht_has_name(htable, op, mval)
-   4.14. sht_has_str_value(htable, op, mval)
+   4.13. sht_match_name(htable, op, mval)
+   4.14. sht_has_name(htable, op, mval)
+   4.15. sht_match_str_value(htable, op, mval)
+   4.16. sht_has_str_value(htable, op, mval)
 
 4.1.  sht_print()
 
@@ -896,7 +911,7 @@ sht_iterator_end("i1");
     sht_iterator_end("i1");
 ...
 
-4.13.  sht_has_name(htable, op, mval)
+4.13.  sht_match_name(htable, op, mval)
 
    Return greater than 0 (true) if the htable has an item that matches the
    name against the mval parameter.
@@ -911,14 +926,18 @@ sht_iterator_end("i1");
 
    This function can be used from ANY_ROUTE.
 
-   Example 1.32. sht_has_name usage
+   Example 1.32. sht_match_name usage
 ...
-if(sht_has_name("ha", "eq", "alice")) {
+if(sht_match_name("ha", "eq", "alice")) {
   ...
 }
 ...
 
-4.14.  sht_has_str_value(htable, op, mval)
+4.14.  sht_has_name(htable, op, mval)
+
+   Alias for sht_match_name().
+
+4.15.  sht_match_str_value(htable, op, mval)
 
    Return greater than 0 (true) if the htable has an item that matches the
    string value against the mval parameter.
@@ -933,12 +952,16 @@ if(sht_has_name("ha", "eq", "alice")) {
 
    This function can be used from ANY_ROUTE.
 
-   Example 1.33. sht_has_name usage
+   Example 1.33. sht_match_name usage
 ...
-if(sht_has_str_value("ha", "eq", "alice")) {
+if(sht_match_str_value("ha", "eq", "alice")) {
   ...
 }
 ...
+
+4.16.  sht_has_str_value(htable, op, mval)
+
+   Alias for sht_match_str_value().
 
 5. Exported pseudo-variables
 
@@ -962,9 +985,10 @@ if(sht_has_str_value("ha", "eq", "alice")) {
    6.4. htable.seti htable key value
    6.5. htable.dump htable
    6.6. htable.reload htable
-   6.7. htable.flush htable
-   6.8. htable.listTables
-   6.9. htable.stats
+   6.7. htable.store htable
+   6.8. htable.flush htable
+   6.9. htable.listTables
+   6.10. htable.stats
 
 6.1.  htable.get htable key
 
@@ -1048,7 +1072,7 @@ kamcmd htable.sets test x[0] 123
 
    Lists all the values in a hash table
 
-   Name: dhtable.dump
+   Name: htable.dump
 
    Parameters:
      * htable : Name of the hash table to dump
@@ -1062,7 +1086,7 @@ kamcmd htable.dump ipban
 
    Reload hash table from database.
 
-   Name: dhtable.reload
+   Name: htable.reload
 
    Parameters:
      * htable : Name of the hash table to reload
@@ -1072,7 +1096,21 @@ kamcmd htable.dump ipban
 kamcmd htable.reload ipban
 ...
 
-6.7.  htable.flush htable
+6.7.  htable.store htable
+
+   Store hash table to database.
+
+   Name: htable.store
+
+   Parameters:
+     * htable : Name of the hash table to store
+
+   Example:
+...
+kamcmd htable.store ipban
+...
+
+6.8.  htable.flush htable
 
    Empty the hash table
 
@@ -1086,7 +1124,7 @@ kamcmd htable.reload ipban
 kamcmd htable.flush ipban
 ...
 
-6.8.  htable.listTables
+6.9.  htable.listTables
 
    Lists all defined tables
 
@@ -1100,7 +1138,7 @@ kamcmd htable.flush ipban
 kamcmd htable.listTables
 ...
 
-6.9.  htable.stats
+6.10.  htable.stats
 
    Get statistics for hash tables - name, number of slots, number of
    items, max number of items per slot, min number of items per slot.

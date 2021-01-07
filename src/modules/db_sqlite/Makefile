@@ -1,5 +1,5 @@
 #
-# WARNING: do not run this directly, it should be run by the master Makefile
+# WARNING: do not run this directly, it should be run by the main Makefile
 
 include ../../Makefile.defs
 auto_gen=
@@ -20,7 +20,7 @@ ifeq ($(INSTALL_FLAVOUR),kamailio)
 # extra install for kamailio
 
 install-sqlite-scripts: $(bin_prefix)/$(bin_dir)
-		SQLITEON=yes make -C ../../../utils/kamctl/ install-modules
+	SQLITEON=yes $(MAKE) -C ../../../utils/kamctl/ install-modules
 
 install-scripts: install-sqlite-scripts
 

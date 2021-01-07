@@ -42,7 +42,9 @@
 #include "rpc_lookup.h"
 #include "sr_compat.h"
 #include "ppcfg.h"
+#include "fmsg.h"
 #include "async_task.h"
+#include "shm_init.h"
 
 #include <sys/stat.h>
 #include <regex.h>
@@ -107,6 +109,24 @@ unsigned int set_modinit_delay(unsigned int v)
 	r =  modinit_delay;
 	modinit_delay = v;
 	return r;
+}
+
+/* shut down phase for instance - kept in shared memory */
+static int *_ksr_shutdown_phase = NULL;
+
+int ksr_shutdown_phase_init(void)
+{
+	if((_ksr_shutdown_phase == NULL) && (shm_initialized())) {
+		_ksr_shutdown_phase = (int*)shm_malloc(sizeof(int));
+	}
+	return 0;
+}
+/**
+ * return destroy modules phase state
+ */
+int ksr_shutdown_phase(void)
+{
+	return (_ksr_shutdown_phase)?(*_ksr_shutdown_phase):0;
 }
 
 /* keep state if server is in destroy modules phase */
@@ -593,6 +613,29 @@ skip:
 }
 
 /**
+ *
+ */
+int load_modulex(char* mod_path)
+{
+	str seval;
+	str sfmt;
+	sip_msg_t *fmsg;
+	char* emod;
+
+	emod = mod_path;
+	if(strchr(mod_path, '$') != NULL) {
+		fmsg = faked_msg_get_next();
+		sfmt.s = mod_path;
+		sfmt.len = strlen(sfmt.s);
+		if(pv_eval_str(fmsg, &seval, &sfmt)>=0) {
+			emod = seval.s;
+		}
+	}
+
+	return load_module(emod);
+}
+
+/**
  * test if command flags are compatible with route block flags (type)
  * - decide if the command is allowed to run within a specific route block
  * - return: 1 if allowed; 0 if not allowed
@@ -738,6 +781,10 @@ void destroy_modules()
 	struct sr_module* t, *foo;
 
 	_sr_destroy_modules_phase = 1;
+	if(_ksr_shutdown_phase!=NULL) {
+		*_ksr_shutdown_phase = 1;
+	}
+
 	/* call first destroy function from each module */
 	t=modules;
 	while(t) {
@@ -760,85 +807,6 @@ void destroy_modules()
 		mod_response_cbks=0;
 	}
 }
-
-#ifdef NO_REVERSE_INIT
-
-/*
- * Initialize all loaded modules, the initialization
- * is done *AFTER* the configuration file is parsed
- */
-int init_modules(void)
-{
-	struct sr_module* t;
-
-	if(async_task_init()<0)
-		return -1;
-
-	for(t = modules; t; t = t->next) {
-		if (t->exports.init_f) {
-			if (t->exports.init_f() != 0) {
-				LM_ERR("Error while initializing module %s\n", t->exports.name);
-				return -1;
-			}
-			/* delay next module init, if configured */
-			if(unlikely(modinit_delay>0))
-				sleep_us(modinit_delay);
-		}
-		if (t->exports.response_f)
-			mod_response_cbk_no++;
-	}
-	mod_response_cbks=pkg_malloc(mod_response_cbk_no *
-									sizeof(response_function));
-	if (mod_response_cbks==0){
-		PKG_MEM_ERROR;
-		return -1;
-	}
-	for (t=modules, i=0; t && (i<mod_response_cbk_no); t=t->next) {
-		if (t->exports.response_f) {
-			mod_response_cbks[i]=t->exports.response_f;
-			i++;
-		}
-	}
-	return 0;
-}
-
-
-
-/*
- * per-child initialization
- */
-int init_child(int rank)
-{
-	struct sr_module* t;
-	char* type;
-
-	switch(rank) {
-	case PROC_MAIN:     type = "PROC_MAIN";     break;
-	case PROC_TIMER:    type = "PROC_TIMER";    break;
-	case PROC_FIFO:     type = "PROC_FIFO";     break;
-	case PROC_TCP_MAIN: type = "PROC_TCP_MAIN"; break;
-	default:            type = "CHILD";         break;
-	}
-	LM_DBG("initializing %s with rank %d\n", type, rank);
-
-	if(async_task_child_init(rank)<0)
-		return -1;
-
-	for(t = modules; t; t = t->next) {
-		if (t->exports.init_child_f) {
-			if ((t->exports.init_child_f(rank)) < 0) {
-				LM_ERR("Initialization of child %d failed\n", rank);
-				return -1;
-			}
-		}
-	}
-	if(rank!=PROC_INIT) {
-		pt[process_no].status = 1;
-	}
-	return 0;
-}
-
-#else
 
 
 /* recursive module child initialization; (recursion is used to
@@ -881,6 +849,23 @@ static int init_mod_child( struct sr_module* m, int rank )
 int init_child(int rank)
 {
 	int ret;
+	char* type;
+
+	switch(rank) {
+	case PROC_MAIN:       type = "PROC_MAIN";       break;
+	case PROC_TIMER:      type = "PROC_TIMER";      break;
+	case PROC_RPC:        type = "PROC_RPC";        break;
+	case PROC_TCP_MAIN:   type = "PROC_TCP_MAIN";   break;
+	case PROC_UNIXSOCK:   type = "PROC_UNIXSOCK";   break;
+	case PROC_ATTENDANT:  type = "PROC_ATTENDANT";  break;
+	case PROC_INIT:       type = "PROC_INIT";       break;
+	case PROC_NOCHLDINIT: type = "PROC_NOCHLDINIT"; break;
+	case PROC_SIPINIT:    type = "PROC_SIPINIT";    break;
+	case PROC_SIPRPC:     type = "PROC_SIPRPC";     break;
+	default:              type = "CHILD";           break;
+	}
+	LM_DBG("initializing %s with rank %d\n", type, rank);
+
 	if(async_task_child_init(rank)<0)
 		return -1;
 
@@ -957,8 +942,6 @@ int init_modules(void)
 
 	return 0;
 }
-
-#endif
 
 
 action_u_t *fixup_get_param(void **cur_param, int cur_param_no,

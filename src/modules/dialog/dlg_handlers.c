@@ -62,6 +62,7 @@ static int       dlg_flag_mask=0;	/*!< flag for dialog tracking */
 static pv_spec_t *timeout_avp;		/*!< AVP for timeout setting */
 static int       default_timeout;	/*!< default dialog timeout */
 static int       seq_match_mode;	/*!< dlg_match mode */
+static int       keep_proxy_rr;		/*!< keep the proxy's record-route in both route-sets */
 static int       shutdown_done = 0;	/*!< 1 when destroy_dlg_handlers was called */
 extern int       detect_spirals;
 extern int       dlg_timeout_noreset;
@@ -103,7 +104,7 @@ int dlg_set_tm_waitack(tm_cell_t *t, dlg_cell_t *dlg);
  */
 void init_dlg_handlers(char *rr_param_p, int dlg_flag_p,
 		pv_spec_t *timeout_avp_p ,int default_timeout_p,
-		int seq_match_mode_p)
+		int seq_match_mode_p, int keep_proxy_rr_p)
 {
 	rr_param.s = rr_param_p;
 	rr_param.len = strlen(rr_param.s);
@@ -113,6 +114,7 @@ void init_dlg_handlers(char *rr_param_p, int dlg_flag_p,
 	timeout_avp = timeout_avp_p;
 	default_timeout = default_timeout_p;
 	seq_match_mode = seq_match_mode_p;
+	keep_proxy_rr = keep_proxy_rr_p;
 }
 
 
@@ -184,7 +186,7 @@ static inline int add_dlg_rr_param(struct sip_msg *req, unsigned int entry,
 int populate_leg_info( struct dlg_cell *dlg, struct sip_msg *msg,
 	struct cell* t, unsigned int leg, str *tag)
 {
-	unsigned int skip_recs;
+	unsigned int skip_recs, own_rr = 0;
 	str cseq;
 	str contact;
 	str rr_set;
@@ -233,11 +235,11 @@ int populate_leg_info( struct dlg_cell *dlg, struct sip_msg *msg,
 		skip_recs = 0;
 	} else {
 		/* was the 200 OK received or local generated */
-		skip_recs = dlg->from_rr_nb +
-			((t->relayed_reply_branch>=0)?
+		own_rr = ((t->relayed_reply_branch>=0)?
 				((t->uac[t->relayed_reply_branch].flags&TM_UAC_FLAG_R2)?2:
 				 ((t->uac[t->relayed_reply_branch].flags&TM_UAC_FLAG_RR)?1:0))
 				:0);
+		skip_recs = dlg->from_rr_nb + ((keep_proxy_rr & 1) > 0 ? 0 : own_rr);
 	}
 
 	if(msg->record_route){
@@ -268,6 +270,25 @@ int populate_leg_info( struct dlg_cell *dlg, struct sip_msg *msg,
 	}
 
 	if (rr_set.s) pkg_free(rr_set.s);
+
+	if ((keep_proxy_rr & 2) > 0 && leg==DLG_CALLEE_LEG && msg->record_route && own_rr > 0) {
+		/* skip_recs contains the number of RR's for the callee */
+		skip_recs -= own_rr;
+		/* Add local RR's to caller's routeset */
+		if( print_rr_body(msg->record_route, &rr_set, DLG_CALLER_LEG,
+		                 &skip_recs) != 0) {
+			LM_ERR("failed to print route records \n");
+			goto error0;
+		}
+		LM_DBG("updating caller route_set %.*s\n",
+			rr_set.len, rr_set.s);
+		if (dlg_update_rr_set( dlg, DLG_CALLER_LEG, &rr_set)!=0) {
+			LM_ERR("dlg_update_rr_set failed\n");
+			if (rr_set.s) pkg_free(rr_set.s);
+			goto error0;
+		}
+		if (rr_set.s) pkg_free(rr_set.s);
+	}
 
 	return 0;
 error0:
@@ -653,11 +674,20 @@ inline static int get_dlg_timeout(struct sip_msg *req)
 	pv_value_t pv_val;
 
 	if( timeout_avp ) {
-		if ( pv_get_spec_value( req, timeout_avp, &pv_val)==0 &&
-				pv_val.flags&PV_VAL_INT && pv_val.ri>0 ) {
-			return pv_val.ri;
+		if ( pv_get_spec_value( req, timeout_avp, &pv_val)==0) {
+			if(pv_val.flags&PV_VAL_INT) {
+				if(pv_val.ri>0 ) {
+					return pv_val.ri;
+				} else {
+					LM_DBG("invalid AVP value\n");
+				}
+			} else {
+				LM_DBG("invalid AVP type\n");
+			}
 		}
-		LM_DBG("invalid AVP value, using default timeout\n");
+		LM_DBG("unable to get valid AVP value, using default timeout\n");
+	} else {
+		LM_DBG("using default timeout\n");
 	}
 	return default_timeout;
 }
@@ -719,15 +749,15 @@ static void dlg_on_send(struct cell* t, int type, struct tmcb_params *param)
 	LM_DBG("dialog_on_send CB\n");
 	iuid = (dlg_iuid_t*)(*param->param);
 	if (iuid==NULL)
-	return;
+		return;
 
 	dlg = dlg_get_by_iuid(iuid);
 	if(dlg==NULL)
-	return;
+		return;
 
 	/* sync over dmq */
 	if (dlg_enable_dmq) {
-	dlg_dmq_replicate_action(DLG_DMQ_UPDATE, dlg, 1, 0);
+		dlg_dmq_replicate_action(DLG_DMQ_UPDATE, dlg, 1, 0);
 	}
 
 	/* unref by 2: 1 set when adding in tm cb, 1 set by dlg_get_by_iuid() */
@@ -1290,10 +1320,12 @@ void dlg_onroute(struct sip_msg* req, str *route_params, void *param)
 			dlg = dlg_lookup(h_entry, h_id);
 			if (dlg==0) {
 				LM_WARN("unable to find dialog for %.*s "
-					"with route param '%.*s' [%u:%u]\n",
+					"with route param '%.*s' [%u:%u] "
+					"and call-id '%.*s'\n",
 					req->first_line.u.request.method.len,
 					req->first_line.u.request.method.s,
-					val.len,val.s, h_entry, h_id);
+					val.len,val.s, h_entry, h_id,
+					req->callid->body.len, req->callid->body.s);
 				if (seq_match_mode==SEQ_MATCH_STRICT_ID )
 					return;
 			} else {
@@ -1428,7 +1460,7 @@ void dlg_onroute(struct sip_msg* req, str *route_params, void *param)
 				dlg->tag[DLG_CALLER_LEG].len, dlg->tag[DLG_CALLER_LEG].s,
 				dlg->tag[DLG_CALLEE_LEG].len, dlg->tag[DLG_CALLEE_LEG].s);
 		} else if (ret > 0) {
-			LM_WARN("inconsitent dlg timer data on dlg %p [%u:%u] "
+			LM_WARN("inconsistent dlg timer data on dlg %p [%u:%u] "
 				"with clid '%.*s' and tags '%.*s' '%.*s'\n",
 				dlg, dlg->h_entry, dlg->h_id,
 				dlg->callid.len, dlg->callid.s,
@@ -1451,7 +1483,7 @@ void dlg_onroute(struct sip_msg* req, str *route_params, void *param)
 		goto done;
 	}
 
-	if ( (event==DLG_EVENT_REQ || event==DLG_EVENT_REQACK)
+	if ( (event==DLG_EVENT_REQ || event==DLG_EVENT_REQACK || event==DLG_EVENT_REQPRACK)
 	&& (new_state==DLG_STATE_CONFIRMED || new_state==DLG_STATE_EARLY)) {
 
 		timeout = get_dlg_timeout(req);
@@ -1613,10 +1645,11 @@ void dlg_ontimeout(struct dlg_tl *tl)
 	}
 
 	if (new_state==DLG_STATE_DELETED && old_state!=DLG_STATE_DELETED) {
-		LM_WARN("timeout for dlg with CallID '%.*s' and tags '%.*s' '%.*s'\n",
+		LM_WARN("dlg timeout - callid: '%.*s' tags: '%.*s' '%.*s' ostate: %d\n",
 			dlg->callid.len, dlg->callid.s,
 			dlg->tag[DLG_CALLER_LEG].len, dlg->tag[DLG_CALLER_LEG].s,
-			dlg->tag[DLG_CALLEE_LEG].len, dlg->tag[DLG_CALLEE_LEG].s);
+			dlg->tag[DLG_CALLEE_LEG].len, dlg->tag[DLG_CALLEE_LEG].s,
+			old_state);
 
 		/* set end time */
 		dlg->end_ts = (unsigned int)(time(0));
@@ -1789,6 +1822,16 @@ int dlg_run_event_route(dlg_cell_t *dlg, sip_msg_t *msg, int ostate, int nstate)
 		if (dlg0==0) {
 			LM_ALERT("after event route - dialog not found [%u:%u] (%d/%d) (%p) (%.*s)\n",
 					h_entry, h_id, ostate, nstate, dlg, evname.len, evname.s);
+			if (nstate == DLG_STATE_DELETED) {
+				if (ostate == DLG_STATE_UNCONFIRMED) {
+					if_update_stat(dlg_enable_stats, failed_dlgs, 1);
+				} else if (ostate == DLG_STATE_EARLY) {
+					if_update_stat(dlg_enable_stats, early_dlgs, -1);
+					if_update_stat(dlg_enable_stats, failed_dlgs, 1);
+				} else if (ostate != DLG_STATE_DELETED) {
+					if_update_stat(dlg_enable_stats, active_dlgs, -1);
+				}
+			}
 			return -1;
 		} else {
 			dlg_release(dlg0);

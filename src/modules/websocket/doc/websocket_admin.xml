@@ -378,11 +378,11 @@ modparam("websocket", "ping_application_data", "WebSockets rock")
 		</para></listitem>
 		<listitem><para>
 		<emphasis>2</emphasis> - msrp (RFC 7977) -
-		msrp.so must be loaded before websocket.so
+		the msrp module must be loaded before the websocket module
 		</para></listitem>
 		</itemizedlist>
-		<para><emphasis>Default value is 1 when msrp.so is not loaded
-		 3 when msrp.so is loaded.</emphasis></para>
+		<para><emphasis>Default value is 1 when msrp module is not loaded,
+		 3 when msrp module is loaded.</emphasis></para>
 		<example>
 		<title>Set <varname>sub_protocols</varname>
 		parameter</title>
@@ -499,7 +499,7 @@ modparam("websocket", "timer_interval", 5)
 		</para>
 		<para><emphasis>Default value is 5.</emphasis></para>
 		<example>
-		<title>Set <varname>rm_timer_interval</varname>parameter</title>
+		<title>Set <varname>rm_delay_interval</varname>parameter</title>
 		<programlisting format="linespecific">
 ...
 modparam("websocket", "rm_delay_interval", 2)
@@ -695,7 +695,7 @@ ws_close(4000, "Because I say so");
 			When defined, the module calls
 			event_route[websocket:closed] when a connection
 			closes.  The connection may be identified using the
-			the $si and $sp pseudo-variables.
+			$si and $sp pseudo-variables.
 		</para>
 		<example>
 		<title><function moreinfo="none">event_route[websocket:closed]</function> usage</title>

@@ -282,8 +282,11 @@ int exec_avp(struct sip_msg *msg, char *cmd, pvname_list_p avpl)
 
 		i++;
 	}
-	if(i == 0)
+	if(i == 0) {
 		LM_DBG("no result from %s\n", cmd);
+	} else {
+		LM_DBG("%d results from %s\n", i, cmd);
+	}
 	/* success */
 	ret = 1;
 
@@ -323,11 +326,17 @@ int exec_cmd(sip_msg_t *msg, char *cmd)
 	exit_status = pclose(pipe);
 	if(WIFEXITED(exit_status)) { /* exited properly .... */
 		/* return false if script exited with non-zero status */
-		if(WEXITSTATUS(exit_status) != 0)
+		if(WEXITSTATUS(exit_status) != 0) {
+			LM_DBG("cmd %s with non-zero status - exit_status=%d,"
+					" wexitstatus: %d, errno=%d: %s\n",
+					cmd, exit_status, WEXITSTATUS(exit_status),
+					errno, strerror(errno));
 			ret = -1;
+		}
 	} else { /* exited erroneously */
-		LM_ERR("cmd %s failed. exit_status=%d, errno=%d: %s\n", cmd,
-				exit_status, errno, strerror(errno));
+		LM_ERR("cmd %s failed. exit_status=%d, wexitstatus: %d, errno=%d: %s\n",
+				cmd, exit_status, WEXITSTATUS(exit_status),
+				errno, strerror(errno));
 		ret = -1;
 	}
 

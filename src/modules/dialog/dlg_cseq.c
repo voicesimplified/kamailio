@@ -364,6 +364,7 @@ int dlg_cseq_msg_sent(sr_event_param_t *evp)
 	struct via_body *via;
 	hdr_field_t *hfk = NULL;
 	sr_cfgenv_t *cenv = NULL;
+	str nbuf = STR_NULL;
 
 	obuf = (str*)evp->data;
 	memset(&msg, 0, sizeof(sip_msg_t));
@@ -380,7 +381,20 @@ int dlg_cseq_msg_sent(sr_event_param_t *evp)
 		goto done;
 	}
 
-	LM_DBG("traking cseq updates\n");
+	if(!IS_SIP(&msg)) {
+		/* nothing to do for non-sip requests */
+		goto done;
+	}
+
+	if(get_to(&msg)->tag_value.len<=0) {
+		/* intial request - handle only INVITEs, ACKs and CANCELs */
+		if(!(msg.first_line.u.request.method_value
+					& (METHOD_INVITE|METHOD_ACK|METHOD_CANCEL))) {
+			goto done;
+		}
+	}
+
+	LM_DBG("tracking cseq updates\n");
 	via = (struct via_body*)msg.h_via1->parsed;
 
 	if(via->branch==NULL || via->branch->value.len<=0) {
@@ -520,11 +534,13 @@ int dlg_cseq_msg_sent(sr_event_param_t *evp)
 		}
 	}
 	/* replace old msg content */
-	obuf->s = pkg_malloc((tbuf_len+1)*sizeof(char));
-	if(obuf->s==NULL) {
+	nbuf.s = pkg_malloc((tbuf_len+1)*sizeof(char));
+	if(nbuf.s==NULL) {
 		LM_ERR("not enough memory for new message\n");
 		goto done;
 	}
+	pkg_free(obuf->s);
+	obuf->s = nbuf.s;
 	memcpy(obuf->s, tbuf, tbuf_len);
 	obuf->s[tbuf_len] = 0;
 	obuf->len = tbuf_len;

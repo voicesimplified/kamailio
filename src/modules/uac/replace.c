@@ -55,7 +55,7 @@ extern int_str restore_from_avp_name;
 extern unsigned short restore_to_avp_type;
 extern int_str restore_to_avp_name;
 
-extern struct dlg_binds dlg_api;
+struct dlg_binds dlg_api;
 static str from_dlgvar[] = {str_init("_uac_fu"), str_init("_uac_funew"), str_init("_uac_fdp"), str_init("_uac_fdpnew")};
 static str to_dlgvar[] = {str_init("_uac_to"), str_init("_uac_tonew"), str_init("_uac_tdp"), str_init("_uac_tdpnew")};
 
@@ -217,7 +217,7 @@ static inline struct lump* get_display_anchor(struct sip_msg *msg,
 	}
 	p1 = (char*)pkg_malloc(1);
 	if (p1==0) {
-		LM_ERR("no more pkg mem \n");
+		PKG_MEM_ERROR;
 		return 0;
 	}
 	*p1 = '>';
@@ -333,7 +333,7 @@ int replace_uri( struct sip_msg *msg, str *display, str *uri,
 			buf.s = pkg_malloc( display->len + 2 );
 			if (buf.s==0)
 			{
-				LM_ERR("no more pkg mem\n");
+				PKG_MEM_ERROR;
 				goto error;
 			}
 			memcpy( buf.s, display->s, display->len);
@@ -370,7 +370,7 @@ int replace_uri( struct sip_msg *msg, str *display, str *uri,
 	p = pkg_malloc( uri->len);
 	if (p==0)
 	{
-		LM_ERR("no more pkg mem\n");
+		PKG_MEM_ERROR;
 		goto error;
 	}
 	memcpy( p, uri->s, uri->len);
@@ -510,7 +510,7 @@ int replace_uri( struct sip_msg *msg, str *display, str *uri,
 		param.s = (char*)pkg_malloc(param.len);
 		if (param.s==0)
 		{
-			LM_ERR("no more pkg mem\n");
+			PKG_MEM_ERROR;
 			goto error;
 		}
 		p = param.s;
@@ -568,6 +568,7 @@ int restore_uri( struct sip_msg *msg, str *rr_param, str* restore_avp,
 	int i;
 	int_str avp_value;
 	int flag;
+	int bsize;
 
 	/* we should process only sequential request, but since we are looking
 	 * for Route param, the test is not really required -bogdan */
@@ -589,15 +590,20 @@ int restore_uri( struct sip_msg *msg, str *rr_param, str* restore_avp,
 		goto failed;
 	}
 
-	add_to_rr.s = pkg_malloc(3+rr_param->len+param_val.len);
+	bsize = 3+rr_param->len+param_val.len;
+	add_to_rr.s = pkg_malloc(bsize);
 	if ( add_to_rr.s==0 ) {
 		add_to_rr.len = 0;
-		LM_ERR("no more pkg mem\n");
+		PKG_MEM_ERROR;
 		goto failed;
 	}
-	add_to_rr.len = sprintf(add_to_rr.s, ";%.*s=%.*s",
+	add_to_rr.len = snprintf(add_to_rr.s, bsize, ";%.*s=%.*s",
 			rr_param->len, rr_param->s, param_val.len, param_val.s);
 
+	if(add_to_rr.len<0 || add_to_rr.len>=bsize) {
+		LM_ERR("printing rr param failed\n");
+		goto failed;
+	}
 	if ( uac_rrb.add_rr_param(msg, &add_to_rr)!=0 ) {
 		LM_ERR("add rr param failed\n");
 		goto failed;
@@ -622,6 +628,7 @@ int restore_uri( struct sip_msg *msg, str *rr_param, str* restore_avp,
 		}
 		old_body = (struct to_body*) msg->to->parsed;
 		flag = FL_USE_UAC_TO;
+		LM_DBG("replacing in To header\n");
 	} else {
 		/* replace the FROM URI */
 		if ( parse_from_header(msg)<0 ) {
@@ -630,6 +637,7 @@ int restore_uri( struct sip_msg *msg, str *rr_param, str* restore_avp,
 		}
 		old_body = (struct to_body*) msg->from->parsed;
 		flag = FL_USE_UAC_FROM;
+		LM_DBG("replacing in From header\n");
 	}
 
 	if(restore_avp->s) {
@@ -688,7 +696,7 @@ int restore_uri( struct sip_msg *msg, str *rr_param, str* restore_avp,
 	/* duplicate the decoded value */
 	p = pkg_malloc( new_uri.len);
 	if (p==0) {
-		LM_ERR("no more pkg mem\n");
+		PKG_MEM_ERROR;
 		goto failed;
 	}
 	memcpy( p, new_uri.s, new_uri.len);
@@ -768,7 +776,7 @@ static inline int restore_uri_reply(struct sip_msg *rpl,
 
 	new_val.s = pkg_malloc( len );
 	if (new_val.s==0) {
-		LM_ERR("no more pkg mem\n");
+		PKG_MEM_ERROR;
 		return -1;
 	}
 	memcpy( new_val.s, p, len);
@@ -934,26 +942,6 @@ static void replace_callback(struct dlg_cell *dlg, int type,
 			old_uri.len, old_uri.s, new_display->len, new_display->s,
 			new_uri->len, new_uri->s);
 
-	/* duplicate the decoded value */
-	p = pkg_malloc( new_uri->len);
-	if (!p) {
-		LM_ERR("no more pkg mem\n");
-		return;
-	}
-	memcpy( p, new_uri->s, new_uri->len);
-
-	/* build del/add lumps */
-	l = del_lump( msg, old_uri.s-msg->buf, old_uri.len, 0);
-	if (l==0) {
-		LM_ERR("del lump failed\n");
-		goto free;
-	}
-
-	if (insert_new_lump_after( l, p, new_uri->len, 0)==0) {
-		LM_ERR("insert new lump failed\n");
-		goto free;
-	}
-
 	/* deal with display name */
 	l = 0;
 	/* first remove the existing display */
@@ -964,8 +952,8 @@ static void replace_callback(struct dlg_cell *dlg, int type,
 		l = del_lump(msg, body->display.s-msg->buf, body->display.len, 0);
 		if (l==0) {
 			LM_ERR("display del lump failed\n");
-			goto free;
-			}
+			return;
+		}
 	}
 	if (new_display->s && new_display->len > 0) {
 		LM_DBG("inserting display [%.*s]\n",
@@ -973,19 +961,39 @@ static void replace_callback(struct dlg_cell *dlg, int type,
 		/* add the new display exactly over the deleted one */
 		buf.s = pkg_malloc(new_display->len + 2);
 		if (buf.s==0) {
-			LM_ERR("no more pkg mem\n");
-			goto free;
+			PKG_MEM_ERROR;
+			return;
 		}
 		memcpy( buf.s, new_display->s, new_display->len);
 		buf.len = new_display->len;
 		if (l==0 && (l=get_display_anchor(msg, hdr, body, &buf)) == 0) {
 			LM_ERR("failed to insert anchor\n");
-			goto free2;
+			goto free1;
 		}
 		if (insert_new_lump_after(l, buf.s, buf.len, 0) == 0) {
 			LM_ERR("insert new display lump failed\n");
-			goto free2;
+			goto free1;
 		}
+	}
+
+	/* uri update - duplicate the decoded value */
+	p = pkg_malloc( new_uri->len);
+	if (!p) {
+		PKG_MEM_ERROR;
+		goto free1;
+	}
+	memcpy( p, new_uri->s, new_uri->len);
+
+	/* build del/add lumps */
+	l = del_lump( msg, old_uri.s-msg->buf, old_uri.len, 0);
+	if (l==0) {
+		LM_ERR("del lump failed\n");
+		goto free2;
+	}
+
+	if (insert_new_lump_after( l, p, new_uri->len, 0)==0) {
+		LM_ERR("insert new lump failed\n");
+		goto free2;
 	}
 
 	/* register tm callback to change replies,
@@ -1001,8 +1009,81 @@ static void replace_callback(struct dlg_cell *dlg, int type,
 	return;
 
 free2:
-	pkg_free(buf.s);
-
-free:
 	pkg_free(p);
+
+free1:
+	pkg_free(buf.s);
+}
+
+
+/* helper function to avoid code duplication */
+static inline int uac_load_callback_helper(struct dlg_cell* dialog, unsigned int uac_flag) {
+
+	if( dlg_api.register_dlgcb(dialog, DLGCB_REQ_WITHIN,
+			(void*)(unsigned long)replace_callback, (void*)(unsigned long)uac_flag, 0) != 0) {
+		LM_ERR("can't register create dialog REQ_WITHIN callback\n");
+		return -1;
+	}
+
+	if( dlg_api.register_dlgcb(dialog, DLGCB_CONFIRMED,
+			(void*)(unsigned long)replace_callback, (void*)(unsigned long)uac_flag, 0) != 0) {
+		LM_ERR("can't register create dialog CONFIRM callback\n");
+		return -1;
+	}
+
+	if( dlg_api.register_dlgcb(dialog, DLGCB_TERMINATED,
+			(void*)(unsigned long)replace_callback, (void*)(unsigned long)uac_flag, 0) != 0) {
+		LM_ERR("can't register create dialog TERMINATED callback\n");
+		return -1;
+	}
+	return 0;
+}
+
+
+/* callback for loading a dialog from database */
+static void uac_on_load_callback(struct dlg_cell* dialog, int type, struct dlg_cb_params* params) {
+
+	if(!dialog) {
+		LM_ERR("invalid values\n!");
+		return;
+	}
+
+	/* Note:
+	 * We don't have a way to access the real uac flags from the uac_replace_*
+	 * method call at this point in time anymore. Therefore we just install a
+	 * callback for both FROM and TO replace cases. This might be a bit
+	 * inefficient in cases where only one of the functions is used. But as
+	 * this applies only e.g. to a proxy restart with runnning dialogs, it
+	 * does not matter. The replace_callback function will just not find a
+	 * an entry in the dialog variables table and log an error.
+	 */
+	if(uac_load_callback_helper(dialog, FL_USE_UAC_FROM) != 0) {
+		LM_ERR("can't register create callbacks for UAC FROM\n");
+		return;
+	}
+	if(uac_load_callback_helper(dialog, FL_USE_UAC_TO) != 0) {
+		LM_ERR("can't register create callbacks for UAC TO\n");
+		return;
+	}
+
+	LM_DBG("dialog '%p' loaded and callbacks registered\n", dialog);
+}
+
+
+/* initialization of all necessary callbacks to track a dialog */
+int uac_init_dlg(void) {
+
+	memset(&dlg_api, 0, sizeof(struct dlg_binds));
+
+	if( load_dlg_api(&dlg_api) != 0) {
+		LM_ERR("can't load dialog API\n");
+		return -1;
+	}
+
+	if( dlg_api.register_dlgcb( 0, DLGCB_LOADED, uac_on_load_callback, 0, 0) != 0) {
+		LM_ERR("can't register on load callback\n");
+		return -1;
+	}
+	LM_DBG("loaded dialog API and registered on load callback\n");
+	return 0;
 }

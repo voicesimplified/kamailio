@@ -40,6 +40,7 @@
 #include "../../core/counters.h"
 #include "dlg_hash.h"
 #include "dlg_var.h"
+#include "dlg_cb.h"
 #include "dlg_profile.h"
 #include "dlg_db_handler.h"
 
@@ -457,7 +458,7 @@ int load_dialog_info_from_db(int dlg_hash_size, int fetch_num_rows,
 			dlg_set_toroute(dlg, &toroute_name);
 
 			GET_STR_VALUE(xdata, values, 21, 0, 0);
-			if(xdata.s!=NULL && dlg->state!=DLG_STATE_DELETED)
+			if(xdata.len > 0 && xdata.s!=NULL && dlg->state!=DLG_STATE_DELETED)
 			{
 				srjson_InitDoc(&jdoc, NULL);
 				jdoc.buf = xdata;
@@ -493,6 +494,7 @@ int load_dialog_info_from_db(int dlg_hash_size, int fetch_num_rows,
 					get_ticks());
 
 			dlg->dflags = 0;
+  
 			if(mode!=0) {
 				if(loaded_extra<DLG_MAX_DB_LOAD_EXTRA) {
 					dbuid[loaded_extra].h_entry = dlg->h_entry;
@@ -502,6 +504,8 @@ int load_dialog_info_from_db(int dlg_hash_size, int fetch_num_rows,
 					dlg->dflags |= DLG_FLAG_DB_LOAD_EXTRA;
 					loaded_extra_more = 1;
 				}
+			  /* if loading at runtime run the callbacks for the loaded dialog */
+			  run_dlg_load_callbacks(dlg);
 			}
 			next_dialog:
 			;
@@ -866,8 +870,10 @@ int update_dialog_dbinfo_unsafe(struct dlg_cell * cell)
 		SET_STR_VALUE(values+6, cell->tag[DLG_CALLEE_LEG]);
 		SET_PROPER_NULL_FLAG(cell->tag[DLG_CALLEE_LEG], values, 6);
 
-		LM_DBG("sock_info is %.*s\n", 
+		LM_DBG("caller sock_info is %.*s, callee sock_info is %.*s\n",
 			cell->bind_addr[DLG_CALLER_LEG]->sock_str.len,
+			cell->bind_addr[DLG_CALLER_LEG]->sock_str.s,
+			cell->bind_addr[DLG_CALLEE_LEG]->sock_str.len,
 			cell->bind_addr[DLG_CALLEE_LEG]->sock_str.s);
 
 		SET_STR_VALUE(values+7, cell->bind_addr[DLG_CALLER_LEG]->sock_str);

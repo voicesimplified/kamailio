@@ -39,17 +39,15 @@
 #include "forward.h"
 #include "action.h"
 #include "mem/mem.h"
-#include "stats.h"
 #include "ip_addr.h"
 #include "script_cb.h"
 #include "nonsip_hooks.h"
 #include "dset.h"
 #include "fmsg.h"
 #include "usr_avp.h"
-#ifdef WITH_XAVP
 #include "xavp.h"
-#endif
 #include "select_buf.h"
+#include "locking.h"
 
 #include "tcp_server.h"  /* for tcpconn_add_alias */
 #include "tcp_options.h" /* for access to tcp_accept_aliases*/
@@ -79,7 +77,7 @@ int ksr_route_locks_set_init(void)
 		return 0;
 
 	ksr_route_locks_set = rec_lock_set_alloc(ksr_route_locks_size);
-	if(ksr_route_locks_set) {
+	if(ksr_route_locks_set==NULL) {
 		LM_ERR("failed to allocate route locks set\n");
 		return -1;
 	}
@@ -219,33 +217,99 @@ int ksr_evrt_received(char *buf, unsigned int len, receive_info_t *rcv_info)
 	return ret;
 }
 
+
+static int ksr_evrt_pre_routing_idx = -1;
+str kemi_pre_routing_callback = STR_NULL;
+
+
+/**
+ *
+ */
+int ksr_evrt_pre_routing(sip_msg_t *msg)
+{
+	int ret = 0;
+	int rt = -1;
+	run_act_ctx_t ra_ctx;
+	run_act_ctx_t *bctx = NULL;
+	sr_kemi_eng_t *keng = NULL;
+	str evname = str_init("core:pre-routing");
+	recv_flags_t brflags;
+
+	if(msg->rcv.rflags & RECV_F_INTERNAL) {
+		DBG("skip internal routed message\n");
+		return 0;
+	}
+
+	if(kemi_pre_routing_callback.len>0) {
+		keng = sr_kemi_eng_get();
+		if(keng == NULL) {
+			LM_DBG("kemi enabled with no core:pre-routing event route callback\n");
+			return 0;
+		}
+	} else {
+		if(ksr_evrt_pre_routing_idx == -1) {
+			rt = route_lookup(&event_rt, evname.s);
+			if (rt < 0 || event_rt.rlist[rt] == NULL) {
+				ksr_evrt_pre_routing_idx = -2;
+			}
+		} else {
+			rt = ksr_evrt_pre_routing_idx;
+		}
+		if (rt < 0 || event_rt.rlist[rt] == NULL) {
+			LM_DBG("event route core:pre-routing not defined\n");
+			return 0;
+		}
+	}
+
+	set_route_type(REQUEST_ROUTE);
+	init_run_actions_ctx(&ra_ctx);
+	brflags = msg->rcv.rflags;
+	msg->rcv.rflags |= RECV_F_PREROUTING;
+	if(keng) {
+		bctx = sr_kemi_act_ctx_get();
+		sr_kemi_act_ctx_set(&ra_ctx);
+		ret=sr_kemi_route(keng, msg, REQUEST_ROUTE,
+				&kemi_pre_routing_callback, &evname);
+		sr_kemi_act_ctx_set(bctx);
+	} else {
+		ret=run_actions(&ra_ctx, event_rt.rlist[rt], msg);
+	}
+	msg->rcv.rflags = brflags;
+	if(ra_ctx.run_flags&DROP_R_F) {
+		LM_DBG("drop was used\n");
+		return 1;
+	}
+	LM_DBG("execution returned %d\n", ret);
+
+	return 0;
+}
+
 /** Receive message
  *  WARNING: buf must be 0 terminated (buf[len]=0) or some things might
  * break (e.g.: modules/textops)
  */
-int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
+int receive_msg(char *buf, unsigned int len, receive_info_t *rcv_info)
 {
-	struct sip_msg *msg;
+	struct sip_msg *msg = NULL;
 	struct run_act_ctx ctx;
-	struct run_act_ctx *bctx;
-	int ret;
-#ifdef STATS
-	int skipped = 1;
-	int stats_on = 1;
-#else
-	int stats_on = 0;
-#endif
-	struct timeval tvb, tve;
-	struct timezone tz;
+	struct run_act_ctx *bctx = NULL;
+	int ret = -1;
+	struct timeval tvb = {0}, tve = {0};
 	unsigned int diff = 0;
-	str inb;
-	sr_net_info_t netinfo;
+	str inb = STR_NULL;
+	sr_net_info_t netinfo = {0};
 	sr_kemi_eng_t *keng = NULL;
 	sr_event_param_t evp = {0};
 	unsigned int cidlockidx = 0;
 	unsigned int cidlockset = 0;
 	int errsipmsg = 0;
 	int exectime = 0;
+
+	if(rcv_info->bind_address==NULL) {
+		LM_ERR("critical - incoming message without local socket [%.*s ...]\n",
+				(len>128)?128:len, buf);
+		return -1;
+	}
 
 	if(ksr_evrt_received_mode!=0) {
 		if(ksr_evrt_received(buf, len, rcv_info)<0) {
@@ -303,11 +367,11 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 			LM_DBG("attempt of nonsip message processing failed\n");
 		} else if(ret == NONSIP_MSG_DROP) {
 			LM_DBG("nonsip message processing completed\n");
-			goto error02;
+			goto end;
 		}
 	}
 	if(errsipmsg==1) {
-		LOG(cfg_get(core, core_cfg, corelog),
+		LOG(cfg_get(core, core_cfg, sip_parser_log),
 				"core parsing of SIP message failed (%s:%d/%d)\n",
 				ip_addr2a(&msg->rcv.src_ip), (int)msg->rcv.src_port,
 				(int)msg->rcv.proto);
@@ -317,7 +381,8 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 
 	if(unlikely(parse_headers(msg, HDR_FROM_F | HDR_TO_F | HDR_CALLID_F | HDR_CSEQ_F, 0)
 			< 0)) {
-		LM_WARN("parsing relevant headers failed\n");
+		LOG(cfg_get(core, core_cfg, sip_parser_log),
+				"parsing relevant headers failed\n");
 	}
 	LM_DBG("--- received sip message - %s - call-id: [%.*s] - cseq: [%.*s]\n",
 			(msg->first_line.type == SIP_REQUEST) ? "request" : "reply",
@@ -332,6 +397,15 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 	/* ... clear branches from previous message */
 	clear_branches();
 
+	ret = ksr_evrt_pre_routing(msg);
+	if(ret<0) {
+		goto error02;
+	}
+	if(ret == 1) {
+		/* finished */
+		goto end;
+	}
+
 	if(unlikely(ksr_route_locks_set!=NULL && msg->callid && msg->callid->body.s
 			&& msg->callid->body.len >0)) {
 		cidlockidx = get_hash1_raw(msg->callid->body.s, msg->callid->body.len);
@@ -340,8 +414,7 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 	}
 
 
-	if(is_printable(cfg_get(core, core_cfg, latency_cfg_log))
-			|| stats_on == 1) {
+	if(is_printable(cfg_get(core, core_cfg, latency_cfg_log))) {
 		exectime = 1;
 	}
 
@@ -357,7 +430,8 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 		/* sanity checks */
 		if(unlikely((msg->via1 == 0) || (msg->via1->error != PARSE_OK))) {
 			/* no via, send back error ? */
-			LM_ERR("no via found in request\n");
+			LOG(cfg_get(core, core_cfg, sip_parser_log),
+					"no via found in request\n");
 			STATS_BAD_MSG();
 			goto error02;
 		}
@@ -382,7 +456,7 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 		/*	skip: */
 		LM_DBG("preparing to run routing scripts...\n");
 		if(exectime) {
-			gettimeofday(&tvb, &tz);
+			gettimeofday(&tvb, NULL);
 		}
 		/* execute pre-script callbacks, if any; -jiri */
 		/* if some of the callbacks said not to continue with
@@ -432,7 +506,7 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 		}
 
 		if(exectime) {
-			gettimeofday(&tve, &tz);
+			gettimeofday(&tve, NULL);
 			diff = (tve.tv_sec - tvb.tv_sec) * 1000000
 				   + (tve.tv_usec - tvb.tv_usec);
 			if (cfg_get(core, core_cfg, latency_limit_cfg) == 0
@@ -440,11 +514,6 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 				LOG(cfg_get(core, core_cfg, latency_cfg_log),
 						"request-route executed in: %d usec\n", diff);
 			}
-#ifdef STATS
-			stats->processed_requests++;
-			stats->acc_req_time += diff;
-			STATS_RX_REQUEST(msg->first_line.u.request.method_value);
-#endif
 		}
 
 		/* execute post request-script callbacks */
@@ -459,11 +528,8 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 		}
 
 		if(exectime) {
-			gettimeofday(&tvb, &tz);
+			gettimeofday(&tvb, NULL);
 		}
-#ifdef STATS
-		STATS_RX_RESPONSE(msg->first_line.u.reply.statuscode / 100);
-#endif
 
 		/* execute pre-script callbacks, if any; -jiri */
 		/* if some of the callbacks said not to continue with
@@ -521,7 +587,7 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 		forward_reply(msg);
 	skip_send_reply:
 		if(exectime) {
-			gettimeofday(&tve, &tz);
+			gettimeofday(&tve, NULL);
 			diff = (tve.tv_sec - tvb.tv_sec) * 1000000
 				   + (tve.tv_usec - tvb.tv_usec);
 			if (cfg_get(core, core_cfg, latency_limit_cfg) == 0
@@ -529,10 +595,6 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 				LOG(cfg_get(core, core_cfg, latency_cfg_log),
 						"reply-route executed in: %d usec\n", diff);
 			}
-#ifdef STATS
-			stats->processed_responses++;
-			stats->acc_res_time += diff;
-#endif
 		}
 
 		/* execute post reply-script callbacks */
@@ -540,17 +602,10 @@ int receive_msg(char *buf, unsigned int len, struct receive_info *rcv_info)
 	}
 
 end:
-#ifdef STATS
-	skipped = 0;
-#endif
 	ksr_msg_env_reset();
 	LM_DBG("cleaning up\n");
 	free_sip_msg(msg);
 	pkg_free(msg);
-#ifdef STATS
-	if(skipped)
-		STATS_RX_DROPS;
-#endif
 	/* reset log prefix */
 	log_prefix_set(NULL);
 	return 0;
@@ -571,19 +626,18 @@ error02:
 	pkg_free(msg);
 error00:
 	ksr_msg_env_reset();
-	STATS_RX_DROPS;
 	/* reset log prefix */
 	log_prefix_set(NULL);
 	return -1;
 }
 
 /**
- * clean up msg environment, such as avp and xavp lists
+ * clean up msg environment, such as avp, xavp and xavu lists
  */
 void ksr_msg_env_reset(void)
 {
 	reset_avps();
-#ifdef WITH_XAVP
 	xavp_reset_list();
-#endif
+	xavu_reset_list();
+	xavi_reset_list();
 }

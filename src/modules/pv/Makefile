@@ -2,7 +2,7 @@
 # pv module makefile
 #
 #
-# WARNING: do not run this directly, it should be run by the master Makefile
+# WARNING: do not run this directly, it should be run by the main Makefile
 
 include ../../Makefile.defs
 auto_gen=
@@ -10,5 +10,4 @@ NAME=pv.so
 LIBS=
 
 SERLIBPATH=../../lib
-SER_LIBS+=$(SERLIBPATH)/srutils/srutils
 include ../../Makefile.modules

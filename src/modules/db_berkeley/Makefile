@@ -2,7 +2,7 @@
 # db_berkeley module makefile
 #
 #
-# WARNING: do not run this directly, it should be run by the master Makefile
+# WARNING: do not run this directly, it should be run by the main Makefile
 include ../../Makefile.defs
 auto_gen=
 NAME=db_berkeley.so
@@ -25,7 +25,7 @@ ifeq ($(INSTALL_FLAVOUR),kamailio)
 # extra install for kamailio
 
 install-berkeley-scripts: $(bin_prefix)/$(bin_dir)
-		BERKELEYDBON=yes make -C ../../../utils/kamctl/ install-modules
+	BERKELEYDBON=yes $(MAKE) -C ../../../utils/kamctl/ install-modules
 
 install-scripts: install-berkeley-scripts
 

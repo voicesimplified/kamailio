@@ -316,7 +316,7 @@ db1_con_t* db_do_init2(const str* url, void* (*new_connection)(), db_pooling_t p
 		/* Not in the pool yet */
 		con = new_connection(id);
 		if (!con) {
-			LM_ERR("could not add connection to the pool");
+			LM_ERR("could not add connection to the pool\n");
 			goto err;
 		}
 		pool_insert((struct pool_con*)con);
@@ -477,8 +477,12 @@ int db_check_table_version(db_func_t* dbf, db1_con_t* dbh, const str* table,
  */
 int db_use_table(db1_con_t* _h, const str* _t)
 {
-	if (!_h || !_t || !_t->s) {
-		LM_ERR("invalid parameter value\n");
+	if (!_h) {
+		LM_ERR("invalid connection parameter\n");
+		return -1;
+	}
+	if (!_t || !_t->s) {
+		LM_ERR("invalid table parameter value\n");
 		return -1;
 	}
 

@@ -217,7 +217,7 @@ static int get_hfblock(str *uri, struct hdr_field *hf, int proto,
 	/* construct a single header block now */
 	ret = pkg_malloc(total_len);
 	if (!ret) {
-		LM_ERR("no pkg mem for hf block\n");
+		PKG_MEM_ERROR;
 		goto error;
 	}
 	i = sl.next;
@@ -278,7 +278,7 @@ static void  rpc_print_routes(rpc_t* rpc, void* c,
 
 	buf=pkg_malloc(size+1);
 	if (buf==0){
-		LM_ERR("out of memory\n");
+		PKG_MEM_ERROR;
 		rpc->add(c, "s", "");
 		return;
 	}
@@ -322,7 +322,7 @@ static void  rpc_print_uris(rpc_t* rpc, void* c, struct sip_msg* reply)
 	dlg_t* dlg;
 	dlg=shm_malloc(sizeof(dlg_t));
 	if (dlg==0){
-		ERR("out of memory (shm)\n");
+		SHM_MEM_ERROR;
 		return;
 	}
 	memset(dlg, 0, sizeof(dlg_t));
@@ -408,7 +408,7 @@ static void rpc_uac_callback(struct cell* t, int type, struct tmcb_params* ps)
  * If all the parameters are ok it will call t_uac() using them.
  * Note: this version will  wait for the transaction final reply
  * only if reply_wait is set to 1. Otherwise the rpc reply will be sent
- * immediately and it will be success if the paremters were ok and t_uac did
+ * immediately and it will be success if the parameters were ok and t_uac did
  * not report any error.
  * Note: reply waiting (reply_wait==1) is not yet supported.
  * @param rpc - rpc handle
@@ -519,7 +519,7 @@ static void rpc_t_uac(rpc_t* rpc, void* c, int reply_wait)
 
 	/* Generate fromtag if not present */
 	if (!fromtag) {
-		generate_fromtag(&dlg.id.loc_tag, &dlg.id.call_id);
+		generate_fromtag(&dlg.id.loc_tag, &dlg.id.call_id, &ruri);
 	}
 
 	/* Fill in CSeq */
@@ -593,7 +593,7 @@ void rpc_t_uac_wait(rpc_t* rpc, void* c)
 
 static int t_uac_check_msg(struct sip_msg* msg,
 		str* method, str* body,
-		int* fromtag, int *cseq_is, int* cseq,
+		str *fromtag, int *cseq_is, int* cseq,
 		str* callid)
 {
 	struct to_body* parsed_from;
@@ -602,33 +602,39 @@ static int t_uac_check_msg(struct sip_msg* msg,
 	char ch;
 
 	if (body->len && !msg->content_type) {
-		LM_ERR("Content-Type missing");
+		LM_ERR("Content-Type missing\n");
 		goto err;
 	}
 
 	if (body->len && msg->content_length) {
-		LM_ERR("Content-Length disallowed");
+		LM_ERR("Content-Length disallowed\n");
 		goto err;
 	}
 
 	if (!msg->to) {
-		LM_ERR("To missing");
+		LM_ERR("To missing\n");
 		goto err;
 	}
 
 	if (!msg->from) {
-		LM_ERR("From missing");
+		LM_ERR("From missing\n");
 		goto err;
 	}
 
 	/* we also need to know if there is from-tag and add it otherwise */
 	if (parse_from_header(msg) < 0) {
-		LM_ERR("Error in From");
+		LM_ERR("Error in From\n");
 		goto err;
 	}
 
 	parsed_from = (struct to_body*)msg->from->parsed;
-	*fromtag = parsed_from->tag_value.s && parsed_from->tag_value.len;
+	if(parsed_from->tag_value.s && parsed_from->tag_value.len) {
+		fromtag->s = parsed_from->tag_value.s;
+		fromtag->len = parsed_from->tag_value.len;
+	} else {
+		fromtag->s = NULL;
+		fromtag->len = 0;
+	}
 
 	*cseq = 0;
 	if (msg->cseq && (parsed_cseq = get_cseq(msg))) {
@@ -640,14 +646,14 @@ static int t_uac_check_msg(struct sip_msg* msg,
 			} else {
 				DBG("check_msg: Found non-numerical in CSeq: <%i>='%c'\n",
 						(unsigned int)ch, ch);
-				LM_ERR("Non-numerical CSeq");
+				LM_ERR("Non-numerical CSeq\n");
 				goto err;
 			}
 		}
 
 		if (parsed_cseq->method.len != method->len ||
 				memcmp(parsed_cseq->method.s, method->s, method->len) !=0 ) {
-			LM_ERR("CSeq method mismatch");
+			LM_ERR("CSeq method mismatch\n");
 			goto err;
 		}
 	} else {
@@ -676,7 +682,8 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	struct socket_info* ssock;
 	str saddr;
 	int sport, sproto;
-	int ret, fromtag, cseq_is, cseq;
+	int ret, cseq_is, cseq;
+	str fromtag;
 	dlg_t dlg;
 	uac_req_t uac_req;
 
@@ -684,7 +691,7 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 
 	/* check and parse parameters */
 	if (method->len<=0){
-		LM_ERR("Empty method");
+		LM_ERR("Empty method\n");
 		return -1;
 	}
 	if (parse_uri(ruri->s, ruri->len, &p_uri)<0){
@@ -724,7 +731,7 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	faked_msg.len=headers->len;
 	faked_msg.buf=faked_msg.unparsed=headers->s;
 	if (parse_headers(&faked_msg, HDR_EOH_F, 0)==-1){
-		LM_ERR("Invalid headers");
+		LM_ERR("Invalid headers\n");
 		return -1;
 	}
 	/* at this moment all the parameters are parsed => more sanity checks */
@@ -735,7 +742,7 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	}
 	if(get_hfblock(nexthop->len? nexthop: ruri, faked_msg.headers,
 			PROTO_NONE, ssock, &hfb)<0) {
-		LM_ERR("failed to get the block of headers");
+		LM_ERR("failed to get the block of headers\n");
 		goto error;
 	}
 	/* proceed to transaction creation */
@@ -749,8 +756,10 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	 */
 
 	/* Generate fromtag if not present */
-	if (!fromtag) {
-		generate_fromtag(&dlg.id.loc_tag, &dlg.id.call_id);
+	if (fromtag.s && fromtag.len) {
+		dlg.id.loc_tag = fromtag;
+	} else {
+		generate_fromtag(&dlg.id.loc_tag, &dlg.id.call_id, ruri);
 	}
 
 	/* Fill in CSeq */
@@ -758,8 +767,11 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	else dlg.loc_seq.value = DEFAULT_CSEQ;
 	dlg.loc_seq.is_set = 1;
 
-	dlg.loc_uri = faked_msg.from->body;
-	dlg.rem_uri = faked_msg.to->body;
+	dlg.loc_uri = get_from(&faked_msg)->uri;
+	dlg.rem_uri = get_to(&faked_msg)->uri;
+	if(get_to(&faked_msg)->tag_value.len > 0) {
+		dlg.id.rem_tag = get_to(&faked_msg)->tag_value;
+	}
 	dlg.rem_target = *ruri;
 	dlg.dst_uri = *nexthop;
 	dlg.send_sock=ssock;
@@ -773,7 +785,7 @@ int t_uac_send(str *method, str *ruri, str *nexthop, str *send_socket,
 	ret = t_uac(&uac_req);
 
 	if (ret <= 0) {
-		LM_ERR("UAC error");
+		LM_ERR("UAC error\n");
 		goto error01;
 	}
 error01:

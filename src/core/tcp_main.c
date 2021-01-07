@@ -50,6 +50,7 @@
 #include <sys/uio.h>  /* writev*/
 #include <netdb.h>
 #include <stdlib.h> /*exit() */
+#include <stdint.h> /* UINT32_MAX */
 
 #include <unistd.h>
 
@@ -87,13 +88,14 @@
 #include "tls_hooks_init.h"
 #include "tls_hooks.h"
 #endif /* CORE_TLS*/
-#ifdef USE_DST_BLACKLIST
-#include "dst_blacklist.h"
-#endif /* USE_DST_BLACKLIST */
+#ifdef USE_DST_BLOCKLIST
+#include "dst_blocklist.h"
+#endif /* USE_DST_BLOCKLIST */
 
 #include "tcp_info.h"
 #include "tcp_options.h"
 #include "ut.h"
+#include "events.h"
 #include "cfg/cfg_struct.h"
 
 #include <fcntl.h> /* must be included after io_wait.h if SIGIO_RT is used */
@@ -157,6 +159,9 @@ enum poll_types tcp_poll_method=0; /* by default choose the best method */
 int tcp_main_max_fd_no=0;
 int tcp_max_connections=DEFAULT_TCP_MAX_CONNECTIONS;
 int tls_max_connections=DEFAULT_TLS_MAX_CONNECTIONS;
+int tcp_accept_unique=0;
+
+int tcp_connection_match=TCPCONN_MATCH_DEFAULT;
 
 static union sockaddr_union tcp_source_ipv4_addr; /* saved bind/srv v4 addr. */
 static union sockaddr_union* tcp_source_ipv4=0;
@@ -528,27 +533,27 @@ error_errno:
 	switch(errno){
 		case ENETUNREACH:
 		case EHOSTUNREACH:
-#ifdef USE_DST_BLACKLIST
-			dst_blacklist_su(BLST_ERR_CONNECT, type,
+#ifdef USE_DST_BLOCKLIST
+			dst_blocklist_su(BLST_ERR_CONNECT, type,
 							 (union sockaddr_union*)servaddr, send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 			TCP_EV_CONNECT_UNREACHABLE(errno, 0, 0,
 							(union sockaddr_union*)servaddr, type);
 			break;
 		case ETIMEDOUT:
-#ifdef USE_DST_BLACKLIST
-			dst_blacklist_su(BLST_ERR_CONNECT, type,
+#ifdef USE_DST_BLOCKLIST
+			dst_blocklist_su(BLST_ERR_CONNECT, type,
 							 (union sockaddr_union*)servaddr, send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 			TCP_EV_CONNECT_TIMEOUT(errno, 0, 0,
 							(union sockaddr_union*)servaddr, type);
 			break;
 		case ECONNREFUSED:
 		case ECONNRESET:
-#ifdef USE_DST_BLACKLIST
-			dst_blacklist_su(BLST_ERR_CONNECT, type,
+#ifdef USE_DST_BLOCKLIST
+			dst_blocklist_su(BLST_ERR_CONNECT, type,
 							 (union sockaddr_union*)servaddr, send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 			TCP_EV_CONNECT_RST(errno, 0, 0,
 							(union sockaddr_union*)servaddr, type);
 			break;
@@ -566,10 +571,10 @@ error_errno:
 	goto error;
 error_timeout:
 	/* timeout */
-#ifdef USE_DST_BLACKLIST
-	dst_blacklist_su(BLST_ERR_CONNECT, type,
+#ifdef USE_DST_BLOCKLIST
+	dst_blocklist_su(BLST_ERR_CONNECT, type,
 						(union sockaddr_union*)servaddr, send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 	TCP_EV_CONNECT_TIMEOUT(0, 0, 0, (union sockaddr_union*)servaddr, type);
 	LM_ERR("%s: timeout %d s elapsed from %d s\n",
 				su2a((union sockaddr_union*)servaddr, addrlen),
@@ -609,25 +614,25 @@ inline static int _wbufq_add(struct  tcp_connection* c, const char* data,
 					((*tcp_total_wq+size)>cfg_get(tcp, tcp_cfg, tcp_wq_max)) ||
 					(q->first &&
 					TICKS_LT(q->wr_timeout, t)) )){
-		LM_ERR("(%d bytes): write queue full or timeout "
-					" (%d, total %d, last write %d s ago)\n",
+		LM_ERR("(%u bytes): write queue full or timeout "
+					" (%u, total %u, last write %d s ago)\n",
 					size, q->queued, *tcp_total_wq,
 					TICKS_TO_S(t-(q->wr_timeout-
 								cfg_get(tcp, tcp_cfg, send_timeout))));
 		if (q->first && TICKS_LT(q->wr_timeout, t)){
 			if (unlikely(c->state==S_CONN_CONNECT)){
-#ifdef USE_DST_BLACKLIST
-				(void)dst_blacklist_su( BLST_ERR_CONNECT, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+				(void)dst_blocklist_su( BLST_ERR_CONNECT, c->rcv.proto,
 										&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 				TCP_EV_CONNECT_TIMEOUT(0, TCP_LADDR(c), TCP_LPORT(c),
 											TCP_PSU(c), TCP_PROTO(c));
 				TCP_STATS_CONNECT_FAILED();
 			}else{
-#ifdef USE_DST_BLACKLIST
-				(void)dst_blacklist_su( BLST_ERR_SEND, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+				(void)dst_blocklist_su( BLST_ERR_SEND, c->rcv.proto,
 									&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 				TCP_EV_SEND_TIMEOUT(0, &c->rcv);
 				TCP_STATS_SEND_TIMEOUT();
 			}
@@ -815,24 +820,24 @@ inline static int wbufq_run(int fd, struct tcp_connection* c, int* empty)
 						switch(errno){
 							case ENETUNREACH:
 							case EHOSTUNREACH: /* not posix for send() */
-#ifdef USE_DST_BLACKLIST
-								dst_blacklist_su(BLST_ERR_CONNECT,
+#ifdef USE_DST_BLOCKLIST
+								dst_blocklist_su(BLST_ERR_CONNECT,
 													c->rcv.proto,
 													&c->rcv.src_su,
 													&c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 								TCP_EV_CONNECT_UNREACHABLE(errno, TCP_LADDR(c),
 													TCP_LPORT(c), TCP_PSU(c),
 													TCP_PROTO(c));
 								break;
 							case ECONNREFUSED:
 							case ECONNRESET:
-#ifdef USE_DST_BLACKLIST
-								dst_blacklist_su(BLST_ERR_CONNECT,
+#ifdef USE_DST_BLOCKLIST
+								dst_blocklist_su(BLST_ERR_CONNECT,
 													c->rcv.proto,
 													&c->rcv.src_su,
 													&c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 								TCP_EV_CONNECT_RST(0, TCP_LADDR(c),
 													TCP_LPORT(c), TCP_PSU(c),
 													TCP_PROTO(c));
@@ -851,12 +856,12 @@ inline static int wbufq_run(int fd, struct tcp_connection* c, int* empty)
 								/* no break */
 							case ENETUNREACH:
 							case EHOSTUNREACH: /* not posix for send() */
-#ifdef USE_DST_BLACKLIST
-								dst_blacklist_su(BLST_ERR_SEND,
+#ifdef USE_DST_BLOCKLIST
+								dst_blocklist_su(BLST_ERR_SEND,
 													c->rcv.proto,
 													&c->rcv.src_su,
 													&c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 								break;
 						}
 					}
@@ -887,75 +892,6 @@ inline static int wbufq_run(int fd, struct tcp_connection* c, int* empty)
 #endif /* TCP_ASYNC */
 
 
-
-#if 0
-/* blocking write even on non-blocking sockets 
- * if TCP_TIMEOUT will return with error */
-static int tcp_blocking_write(struct tcp_connection* c, int fd, char* buf,
-								unsigned int len)
-{
-	int n;
-	fd_set sel_set;
-	struct timeval timeout;
-	int ticks;
-	int initial_len;
-	
-	initial_len=len;
-again:
-	
-	n=send(fd, buf, len,
-#ifdef HAVE_MSG_NOSIGNAL
-			MSG_NOSIGNAL
-#else
-			0
-#endif
-		);
-	if (n<0){
-		if (errno==EINTR)	goto again;
-		else if (errno!=EAGAIN && errno!=EWOULDBLOCK){
-			LM_ERR("failed to send: (%d) %s\n", errno, strerror(errno));
-			TCP_EV_SEND_TIMEOUT(errno, &c->rcv);
-			TCP_STATS_SEND_TIMEOUT();
-			goto error;
-		}
-	}else if (n<len){
-		/* partial write */
-		buf+=n;
-		len-=n;
-	}else{
-		/* success: full write */
-		goto end;
-	}
-	while(1){
-		FD_ZERO(&sel_set);
-		FD_SET(fd, &sel_set);
-		timeout.tv_sec=tcp_send_timeout;
-		timeout.tv_usec=0;
-		ticks=get_ticks();
-		n=select(fd+1, 0, &sel_set, 0, &timeout);
-		if (n<0){
-			if (errno==EINTR) continue; /* signal, ignore */
-			LM_ERR("select failed: (%d) %s\n", errno, strerror(errno));
-			goto error;
-		}else if (n==0){
-			/* timeout */
-			if (get_ticks()-ticks>=tcp_send_timeout){
-				LM_ERR("send timeout (%d)\n", tcp_send_timeout);
-				goto error;
-			}
-			continue;
-		}
-		if (FD_ISSET(fd, &sel_set)){
-			/* we can write again */
-			goto again;
-		}
-	}
-error:
-		return -1;
-end:
-		return initial_len;
-}
-#endif
 
 /* Attempt to extract real connection information from an upstream load
  * balancer or reverse proxy. This should be called right after accept()ing the
@@ -1016,6 +952,14 @@ int tcpconn_read_haproxy(struct tcp_connection *c) {
 	do {
 		bytes = recv(c->s, &hdr, sizeof(hdr), MSG_PEEK);
 	} while (bytes == -1 && (errno == EINTR || errno == EAGAIN));
+
+	/* copy original tunnel address details */
+	memcpy(&c->cinfo.src_ip, &c->rcv.src_ip, sizeof(ip_addr_t));
+	memcpy(&c->cinfo.dst_ip, &c->rcv.dst_ip, sizeof(ip_addr_t));
+	c->cinfo.src_port = c->rcv.src_port;
+	c->cinfo.dst_port = c->rcv.dst_port;
+	c->cinfo.proto = (int)c->rcv.proto;
+	c->cinfo.csocket = c->rcv.bind_address;
 
 	src_ip = &c->rcv.src_ip;
 	dst_ip = &c->rcv.dst_ip;
@@ -1164,10 +1108,9 @@ int tcpconn_read_haproxy(struct tcp_connection *c) {
 		}
 	} else if (bytes == 0) {
 		return 1; /* EOF? Return "no IP change" in any case */
-	}
-	else {
-		/* Wrong protocol */
-		return -1;
+	} else {
+		/* not haproxy protocol */
+		return 2;
 	}
 
 done:
@@ -1203,33 +1146,33 @@ struct tcp_connection* tcpconn_new(int sock, union sockaddr_union* su,
 
 	c->rcv.src_su=*su;
 
+	su2ip_addr(&c->rcv.src_ip, su);
+	c->rcv.src_port=su_getport(su);
+	if (likely(local_addr)){
+		su2ip_addr(&c->rcv.dst_ip, local_addr);
+		c->rcv.dst_port=su_getport(local_addr);
+	}else if (ba){
+		c->rcv.dst_ip=ba->address;
+		c->rcv.dst_port=ba->port_no;
+	}
+	c->rcv.bind_address=ba;
+
 	atomic_set(&c->refcnt, 0);
 	local_timer_init(&c->timer, tcpconn_main_timeout, c, 0);
+
 	if (unlikely(ksr_tcp_accept_haproxy && state == S_CONN_ACCEPT)) {
 		ret = tcpconn_read_haproxy(c);
-
 		if (ret == -1) {
 			LM_ERR("invalid PROXY protocol header\n");
 			goto error;
 		} else if (ret == 1) {
 			LM_DBG("PROXY protocol did not override IP addresses\n");
-			goto read_ip_info;
-		}
-	} else {
-read_ip_info:
-		su2ip_addr(&c->rcv.src_ip, su);
-		c->rcv.src_port=su_getport(su);
-		if (likely(local_addr)){
-			su2ip_addr(&c->rcv.dst_ip, local_addr);
-			c->rcv.dst_port=su_getport(local_addr);
-		}else if (ba){
-			c->rcv.dst_ip=ba->address;
-			c->rcv.dst_port=ba->port_no;
+		} else if (ret == 2) {
+			LM_DBG("PROXY protocol header not found\n");
 		}
 	}
-	c->rcv.bind_address=ba;
 	print_ip("tcpconn_new: new tcp connection: ", &c->rcv.src_ip, "\n");
-	LM_DBG("on port %d, type %d\n", c->rcv.src_port, type);
+	LM_DBG("on port %d, type %d, socket %d\n", c->rcv.src_port, type, sock);
 	init_tcp_req(&c->req, (char*)c+sizeof(struct tcp_connection), rd_b_size);
 	c->id=(*connection_id)++;
 	c->rcv.proto_reserved1=0; /* this will be filled before receive_message*/
@@ -1308,25 +1251,25 @@ again:
 				switch(errno){
 					case ENETUNREACH:
 					case EHOSTUNREACH:
-#ifdef USE_DST_BLACKLIST
-						dst_blacklist_su(BLST_ERR_CONNECT, type, server,
+#ifdef USE_DST_BLOCKLIST
+						dst_blocklist_su(BLST_ERR_CONNECT, type, server,
 											send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 						TCP_EV_CONNECT_UNREACHABLE(errno, 0, 0, server, type);
 						break;
 					case ETIMEDOUT:
-#ifdef USE_DST_BLACKLIST
-						dst_blacklist_su(BLST_ERR_CONNECT, type, server,
+#ifdef USE_DST_BLOCKLIST
+						dst_blocklist_su(BLST_ERR_CONNECT, type, server,
 											send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 						TCP_EV_CONNECT_TIMEOUT(errno, 0, 0, server, type);
 						break;
 					case ECONNREFUSED:
 					case ECONNRESET:
-#ifdef USE_DST_BLACKLIST
-						dst_blacklist_su(BLST_ERR_CONNECT, type, server,
+#ifdef USE_DST_BLOCKLIST
+						dst_blocklist_su(BLST_ERR_CONNECT, type, server,
 											send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 						TCP_EV_CONNECT_RST(errno, 0, 0, server, type);
 						break;
 					case EAGAIN:/* not posix, but supported on linux and bsd */
@@ -1369,18 +1312,31 @@ again:
 	su2ip_addr(&ip, &my_name);
 find_socket:
 #ifdef USE_TLS
-	if (unlikely(type==PROTO_TLS))
+	if (unlikely(type==PROTO_TLS)) {
 		*res_si=find_si(&ip, 0, PROTO_TLS);
-	else
-#endif
+	} else {
 		*res_si=find_si(&ip, 0, PROTO_TCP);
-	
+	}
+#else
+	*res_si=find_si(&ip, 0, PROTO_TCP);
+#endif
+
 	if (unlikely(*res_si==0)){
 		LM_WARN("%s: could not find corresponding"
 				" listening socket for %s, using default...\n",
 					su2a(server, sizeof(*server)), ip_addr2a(&ip));
+#ifdef USE_TLS
+		if (unlikely(type==PROTO_TLS)) {
+			if (server->s.sa_family==AF_INET) *res_si=sendipv4_tls;
+			else *res_si=sendipv6_tls;
+		} else {
+			if (server->s.sa_family==AF_INET) *res_si=sendipv4_tcp;
+			else *res_si=sendipv6_tcp;
+		}
+#else
 		if (server->s.sa_family==AF_INET) *res_si=sendipv4_tcp;
 		else *res_si=sendipv6_tcp;
+#endif
 	}
 	*res_local_addr=*from;
 	return s;
@@ -1620,7 +1576,7 @@ struct tcp_connection* _tcpconn_find(int id, struct ip_addr* ip, int port,
 	int is_local_ip_any;
 	
 #ifdef EXTRA_DEBUG
-	LM_DBG("%d  port %d\n",id, port);
+	LM_DBG("%d  port %d\n", id, port);
 	if (ip) print_ip("tcpconn_find: ip ", ip, "\n");
 #endif
 	if (likely(id)){
@@ -1630,7 +1586,10 @@ struct tcp_connection* _tcpconn_find(int id, struct ip_addr* ip, int port,
 			LM_DBG("c=%p, c->id=%d, port=%d\n", c, c->id, c->rcv.src_port);
 			print_ip("ip=", &c->rcv.src_ip, "\n");
 #endif
-			if ((id==c->id)&&(c->state!=S_CONN_BAD)) return c;
+			if ((id==c->id)&&(c->state!=S_CONN_BAD)) {
+				LM_DBG("found connection by id: %d\n", id);
+				return c;
+			}
 		}
 	}else if (likely(ip)){
 		hash=tcp_addr_hash(ip, port, l_ip, l_port);
@@ -1646,30 +1605,52 @@ struct tcp_connection* _tcpconn_find(int id, struct ip_addr* ip, int port,
 					(ip_addr_cmp(ip, &a->parent->rcv.src_ip)) &&
 					(is_local_ip_any ||
 						ip_addr_cmp(l_ip, &a->parent->rcv.dst_ip))
-				)
+			   ) {
+				LM_DBG("found connection by peer address (id: %d)\n",
+						a->parent->id);
 				return a->parent;
+			}
 		}
 	}
 	return 0;
 }
 
 
+/**
+ * find if a tcp connection exits by id or remote+local address/port
+ * - return: 1 if found; 0 if not found
+ */
+int tcpconn_exists(int conn_id, ip_addr_t* peer_ip, int peer_port,
+						ip_addr_t* local_ip, int local_port)
+{
+	tcp_connection_t* c;
 
-/* _tcpconn_find with locks and timeout
- * local_addr contains the desired local ip:port. If null any local address 
- * will be used.  IN*ADDR_ANY or 0 port are wild cards.
+	TCPCONN_LOCK;
+	c=_tcpconn_find(conn_id, peer_ip, peer_port, local_ip, local_port);
+	TCPCONN_UNLOCK;
+	if (c) {
+		return 1;
+	}
+	return 0;
+
+}
+
+/* TCP connection find with locks and timeout
+ * - local_addr contains the desired local ip:port. If null any local address
+ * will be used. IN*ADDR_ANY or 0 port are wild cards.
+ * - try_local_port makes the search use it first, instead of port from local_addr
  * If found, the connection's reference counter will be incremented, you might
  * want to decrement it after use.
  */
-struct tcp_connection* tcpconn_get(int id, struct ip_addr* ip, int port,
-									union sockaddr_union* local_addr,
-									ticks_t timeout)
+struct tcp_connection* tcpconn_lookup(int id, struct ip_addr* ip, int port,
+		union sockaddr_union* local_addr, int try_local_port, ticks_t timeout)
 {
 	struct tcp_connection* c;
 	struct ip_addr local_ip;
 	int local_port;
-	
+
 	local_port=0;
+	c = NULL;
 	if (likely(ip)){
 		if (unlikely(local_addr)){
 			su2ip_addr(&local_ip, local_addr);
@@ -1680,8 +1661,13 @@ struct tcp_connection* tcpconn_get(int id, struct ip_addr* ip, int port,
 		}
 	}
 	TCPCONN_LOCK;
-	c=_tcpconn_find(id, ip, port, &local_ip, local_port);
-	if (likely(c)){ 
+	if(likely(try_local_port!=0) && likely(local_port==0)) {
+		c=_tcpconn_find(id, ip, port, &local_ip, try_local_port);
+	}
+	if(unlikely(c==NULL)) {
+		c=_tcpconn_find(id, ip, port, &local_ip, local_port);
+	}
+	if (likely(c)) {
 			atomic_inc(&c->refcnt);
 			/* update the timeout only if the connection is not handled
 			 * by a tcp reader _and_the timeout is non-zero  (the tcp
@@ -1695,6 +1681,18 @@ struct tcp_connection* tcpconn_get(int id, struct ip_addr* ip, int port,
 	return c;
 }
 
+/* TCP connection find with locks and timeout
+ * - local_addr contains the desired local ip:port. If null any local address
+ * will be used.  IN*ADDR_ANY or 0 port are wild cards.
+ * If found, the connection's reference counter will be incremented, you might
+ * want to decrement it after use.
+ */
+struct tcp_connection* tcpconn_get(int id, struct ip_addr* ip, int port,
+									union sockaddr_union* local_addr,
+									ticks_t timeout)
+{
+	return tcpconn_lookup(id, ip, port, local_addr, 0, timeout);
+}
 
 
 /* add c->dst:port, local_addr as an alias for the "id" connection, 
@@ -1934,6 +1932,7 @@ int tcp_send(struct dest_info* dst, union sockaddr_union* from,
 	long response[2];
 	int n;
 	ticks_t con_lifetime;
+	int try_local_port;
 #ifdef USE_TLS
 	const char* rest_buf;
 	const char* t_buf;
@@ -1942,11 +1941,21 @@ int tcp_send(struct dest_info* dst, union sockaddr_union* from,
 	snd_flags_t t_send_flags;
 #endif /* USE_TLS */
 
+	if(unlikely(dst==NULL)) {
+		LM_ERR("no destination address provided\n");
+		return -1;
+	}
+
 	port=su_getport(&dst->to);
+	try_local_port = (dst->send_sock)?dst->send_sock->port_no:0;
 	con_lifetime=cfg_get(tcp, tcp_cfg, con_lifetime);
 	if (likely(port)){
 		su2ip_addr(&ip, &dst->to);
-		c=tcpconn_get(dst->id, &ip, port, from, con_lifetime);
+		if(tcp_connection_match==TCPCONN_MATCH_STRICT) {
+			c=tcpconn_lookup(dst->id, &ip, port, from, try_local_port, con_lifetime);
+		} else {
+			c=tcpconn_get(dst->id, &ip, port, from, con_lifetime);
+		}
 	}else if (likely(dst->id)){
 		c=tcpconn_get(dst->id, 0, 0, 0, con_lifetime);
 	}else{
@@ -1958,7 +1967,11 @@ int tcp_send(struct dest_info* dst, union sockaddr_union* from,
 		if (unlikely(c==0)) {
 			if (likely(port)){
 				/* try again w/o id */
-				c=tcpconn_get(0, &ip, port, from, con_lifetime);
+				if(tcp_connection_match==TCPCONN_MATCH_STRICT) {
+					c=tcpconn_lookup(0, &ip, port, from, try_local_port, con_lifetime);
+				} else {
+					c=tcpconn_get(0, &ip, port, from, con_lifetime);
+				}
 			}else{
 				LM_ERR("id %d not found, dropping\n", dst->id);
 				return -1;
@@ -2036,7 +2049,7 @@ int tcp_send(struct dest_info* dst, union sockaddr_union* from,
 			/* do connect and if src ip or port changed, update the
 			 * aliases */
 			if (unlikely((fd=tcpconn_finish_connect(c, from))<0)){
-				/* tcpconn_finish_connect will automatically blacklist
+				/* tcpconn_finish_connect will automatically blocklist
 				 * on error => no need to do it here */
 				LM_ERR("%s: tcpconn_finish_connect(%p) failed\n",
 						su2a(&dst->to, sizeof(dst->to)), c);
@@ -2657,7 +2670,7 @@ int tcpconn_send_unsafe(int fd, struct tcp_connection *c,
 
 
 /** lower level send (connection and fd should be known).
- * It takes care of possible write-queueing, blacklisting a.s.o.
+ * It takes care of possible write-queueing, blocklisting a.s.o.
  * It expects a valid tcp connection. It doesn't touch the ref. cnts.
  * It will also set the connection flags from send_flags (it's better
  * to do it here, because it's guaranteed to be under lock).
@@ -2714,7 +2727,6 @@ static int tcpconn_do_send(int fd, struct tcp_connection* c,
 		n=_tcpconn_write_nb(fd, c, buf, len);
 	}else{
 #endif /* TCP_ASYNC */
-		/* n=tcp_blocking_write(c, fd, buf, len); */
 		n=tsend_stream(fd, buf, len,
 						TICKS_TO_S(cfg_get(tcp, tcp_cfg, send_timeout)) *
 						1000);
@@ -2755,19 +2767,19 @@ static int tcpconn_do_send(int fd, struct tcp_connection* c,
 			switch(errno){
 				case ENETUNREACH:
 				case EHOSTUNREACH: /* not posix for send() */
-#ifdef USE_DST_BLACKLIST
-					dst_blacklist_su(BLST_ERR_CONNECT, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+					dst_blocklist_su(BLST_ERR_CONNECT, c->rcv.proto,
 										&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 					TCP_EV_CONNECT_UNREACHABLE(errno, TCP_LADDR(c),
 									TCP_LPORT(c), TCP_PSU(c), TCP_PROTO(c));
 					break;
 				case ECONNREFUSED:
 				case ECONNRESET:
-#ifdef USE_DST_BLACKLIST
-					dst_blacklist_su(BLST_ERR_CONNECT, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+					dst_blocklist_su(BLST_ERR_CONNECT, c->rcv.proto,
 										&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 					TCP_EV_CONNECT_RST(errno, TCP_LADDR(c), TCP_LPORT(c),
 										TCP_PSU(c), TCP_PROTO(c));
 					break;
@@ -2784,10 +2796,10 @@ static int tcpconn_do_send(int fd, struct tcp_connection* c,
 					/* no break */
 				case ENETUNREACH:
 				/*case EHOSTUNREACH: -- not posix */
-#ifdef USE_DST_BLACKLIST
-					dst_blacklist_su(BLST_ERR_SEND, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+					dst_blocklist_su(BLST_ERR_SEND, c->rcv.proto,
 										&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 					break;
 			}
 		}
@@ -2830,7 +2842,7 @@ end:
 
 
 /** low level 1st send on a new connection.
- * It takes care of possible write-queueing, blacklisting a.s.o.
+ * It takes care of possible write-queueing, blocklisting a.s.o.
  * It expects a valid just-opened tcp connection. It doesn't touch the 
  * ref. counters. It's used only in the async first send case.
  * @param fd - fd used for sending.
@@ -2863,7 +2875,7 @@ static int tcpconn_1st_send(int fd, struct tcp_connection* c,
 							int locked)
 {
 	int n;
-	
+
 	n=_tcpconn_write_nb(fd, c, buf, len);
 	if (unlikely(n<(int)len)){
 		/* on EAGAIN or ENOTCONN return success.
@@ -2871,12 +2883,12 @@ static int tcpconn_1st_send(int fd, struct tcp_connection* c,
 		   connect() & send immediately) */
 		if ((n>=0) || errno==EAGAIN || errno==EWOULDBLOCK || errno==ENOTCONN){
 			if(n<0) {
-				LM_DBG("pending write on new connection %p "
-					"(%d/%d bytes written) (err: %d - %s)\n", c, n, len,
+				LM_DBG("pending write on new connection %p sock %d "
+					"(%d/%d bytes written) (err: %d - %s)\n", c, fd, n, len,
 					errno, strerror(errno));
 			} else {
-				LM_DBG("pending write on new connection %p "
-					"(%d/%d bytes written)\n", c, n, len);
+				LM_DBG("pending write on new connection %p sock %d "
+					"(%d/%d bytes written)\n", c, fd, n, len);
 			}
 			if (unlikely(n<0)) n=0;
 			else{
@@ -2890,8 +2902,9 @@ static int tcpconn_1st_send(int fd, struct tcp_connection* c,
 				if (unlikely(_wbufq_insert(c, buf+n, len-n)<0)){
 					if (likely(!locked)) lock_release(&c->write_lock);
 					n=-1;
-					LM_ERR("%s: EAGAIN and write queue full or failed for %p\n",
-							su2a(&c->rcv.src_su, sizeof(c->rcv.src_su)), c);
+					LM_ERR("%s: EAGAIN and write queue full or failed for %p"
+							" sock %d\n", su2a(&c->rcv.src_su,
+								sizeof(c->rcv.src_su)), c, fd);
 					goto error;
 				}
 			if (likely(!locked)) lock_release(&c->write_lock);
@@ -2906,19 +2919,19 @@ static int tcpconn_1st_send(int fd, struct tcp_connection* c,
 		switch(errno){
 			case ENETUNREACH:
 			case EHOSTUNREACH:  /* not posix for send() */
-#ifdef USE_DST_BLACKLIST
-				dst_blacklist_su( BLST_ERR_CONNECT, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+				dst_blocklist_su( BLST_ERR_CONNECT, c->rcv.proto,
 									&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 				TCP_EV_CONNECT_UNREACHABLE(errno, TCP_LADDR(c),
 								TCP_LPORT(c), TCP_PSU(c), TCP_PROTO(c));
 				break;
 			case ECONNREFUSED:
 			case ECONNRESET:
-#ifdef USE_DST_BLACKLIST
-				dst_blacklist_su( BLST_ERR_CONNECT, c->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+				dst_blocklist_su( BLST_ERR_CONNECT, c->rcv.proto,
 									&c->rcv.src_su, &c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 				TCP_EV_CONNECT_RST(errno, TCP_LADDR(c),
 								TCP_LPORT(c), TCP_PSU(c), TCP_PROTO(c));
 				break;
@@ -2928,12 +2941,12 @@ static int tcpconn_1st_send(int fd, struct tcp_connection* c,
 		}
 		/* error: destroy it directly */
 		TCP_STATS_CONNECT_FAILED();
-		LM_ERR("%s: connect & send  for %p failed:" " %s (%d)\n",
+		LM_ERR("%s: connect & send for %p (sock %d) failed:" " %s (%d)\n",
 					su2a(&c->rcv.src_su, sizeof(c->rcv.src_su)),
-					c, strerror(errno), errno);
+					c, fd, strerror(errno), errno);
 		goto error;
 	}
-	LM_INFO("quick connect for %p\n", c);
+	LM_INFO("quick connect for %p sock %d\n", c, fd);
 	if (likely(c->state == S_CONN_CONNECT))
 		TCP_STATS_ESTABLISHED(S_CONN_CONNECT);
 	if (unlikely(send_flags.f & SND_F_CON_CLOSE)){
@@ -3039,6 +3052,11 @@ int tcp_init(struct socket_info* sock_info)
 					(void*)&optval, sizeof(optval)) ==-1) {
 			LM_WARN("setsockopt v6 tos: %s (%d)\n", strerror(errno), tos);
 			/* continue since this is not critical */
+		}
+		if(sr_bind_ipv6_link_local!=0) {
+			LM_INFO("setting scope of %s\n", sock_info->address_str.s);
+			addr->sin6.sin6_scope_id =
+				ipv6_get_netif_scope(sock_info->address_str.s);
 		}
 	}
 
@@ -3246,7 +3264,8 @@ inline static int tcpconn_put_destroy(struct tcp_connection* tcpconn)
 	 * the refcnt. and at least a membar_write_atomic_op() mem. barrier or
 	 *  a mb_atomic_* op must * be used to make sure all the changed flags are
 	 *  written into memory prior to the new refcnt value */
-	if (unlikely(mb_atomic_dec_and_test(&tcpconn->refcnt))){
+	if (unlikely((mb_atomic_get(&tcpconn->refcnt)==0)
+				|| mb_atomic_dec_and_test(&tcpconn->refcnt))){
 		_tcpconn_free(tcpconn);
 		return 1;
 	}
@@ -3479,7 +3498,7 @@ again:
 /* handles io from a tcp child process
  * params: tcp_c - pointer in the tcp_children array, to the entry for
  *                 which an io event was detected 
- *         fd_i  - fd index in the fd_array (usefull for optimizing
+ *         fd_i  - fd index in the fd_array (useful for optimizing
  *                 io_watch_deletes)
  * returns:  handle_* return convention: -1 on error, 0 on EAGAIN (no more
  *           io events queued), >0 on success. success/error refer only to
@@ -3589,26 +3608,26 @@ inline static int handle_tcp_child(struct tcp_child* tcp_c, int fd_i)
 							_wbufq_non_empty(tcpconn) )){
 				if (unlikely(TICKS_GE(t, tcpconn->wbuf_q.wr_timeout))){
 					LM_DBG("wr. timeout on CONN_RELEASE for %p refcnt= %d\n",
-							tcpconn, atomic_get(&tcpconn->refcnt));
+							(void*)tcpconn, atomic_get(&tcpconn->refcnt));
 					/* timeout */
 					if (unlikely(tcpconn->state==S_CONN_CONNECT)){
-#ifdef USE_DST_BLACKLIST
-						(void)dst_blacklist_su( BLST_ERR_CONNECT,
+#ifdef USE_DST_BLOCKLIST
+						(void)dst_blocklist_su( BLST_ERR_CONNECT,
 											tcpconn->rcv.proto,
 											&tcpconn->rcv.src_su,
 											&tcpconn->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 						TCP_EV_CONNECT_TIMEOUT(0, TCP_LADDR(tcpconn),
 										TCP_LPORT(tcpconn), TCP_PSU(tcpconn),
 										TCP_PROTO(tcpconn));
 						TCP_STATS_CONNECT_FAILED();
 					}else{
-#ifdef USE_DST_BLACKLIST
-						(void)dst_blacklist_su( BLST_ERR_SEND,
+#ifdef USE_DST_BLOCKLIST
+						(void)dst_blocklist_su( BLST_ERR_SEND,
 											tcpconn->rcv.proto,
 											&tcpconn->rcv.src_su,
 											&tcpconn->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 						TCP_EV_SEND_TIMEOUT(0, &tcpconn->rcv);
 						TCP_STATS_SEND_TIMEOUT();
 					}
@@ -3702,7 +3721,7 @@ error:
  * 
  * params: p     - pointer in the ser processes array (pt[]), to the entry for
  *                 which an io event was detected
- *         fd_i  - fd index in the fd_array (usefull for optimizing
+ *         fd_i  - fd index in the fd_array (useful for optimizing
  *                 io_watch_deletes)
  * returns:  handle_* return convention:
  *          -1 on error reading from the fd,
@@ -4111,7 +4130,7 @@ inline static int send2child(struct tcp_connection* tcpconn)
 			tcpconn);
 	/* first make sure this child doesn't have pending request for
 	 * tcp_main (to avoid a possible deadlock: e.g. child wants to
-	 * send a release command, but the master fills its socket buffer
+	 * send a release command, but the main attendant fills its socket buffer
 	 * with new connection commands => deadlock) */
 	/* answer tcp_send requests first */
 	while(unlikely((tcpconn->state != S_CONN_BAD) &&
@@ -4239,6 +4258,15 @@ static inline int handle_new_connect(struct socket_info* si)
 	/* add socket to list */
 	tcpconn=tcpconn_new(new_sock, &su, dst_su, si, si->proto, S_CONN_ACCEPT);
 	if (likely(tcpconn)){
+		if(tcp_accept_unique) {
+			if(tcpconn_exists(0, &tcpconn->rcv.dst_ip, tcpconn->rcv.dst_port,
+						&tcpconn->rcv.src_ip, tcpconn->rcv.src_port)) {
+				LM_ERR("duplicated connection by local and remote addresses\n");
+				_tcpconn_free(tcpconn);
+				tcp_safe_close(new_sock);
+				return 1; /* success, because the accept was succesfull */
+			}
+		}
 		tcpconn->flags|=F_CONN_PASSIVE;
 #ifdef TCP_PASS_NEW_CONNECTION_ON_DATA
 		atomic_set(&tcpconn->refcnt, 1); /* safe, not yet available to the
@@ -4358,21 +4386,21 @@ inline static int handle_tcpconn_ev(struct tcp_connection* tcpconn, short ev,
 								F_CONN_WANTS_RD|F_CONN_WANTS_WR);
 			if (unlikely(ev & POLLERR)){
 				if (unlikely(tcpconn->state==S_CONN_CONNECT)){
-#ifdef USE_DST_BLACKLIST
-					(void)dst_blacklist_su(BLST_ERR_CONNECT, tcpconn->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+					(void)dst_blocklist_su(BLST_ERR_CONNECT, tcpconn->rcv.proto,
 										&tcpconn->rcv.src_su,
 										&tcpconn->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 					TCP_EV_CONNECT_ERR(0, TCP_LADDR(tcpconn),
 										TCP_LPORT(tcpconn), TCP_PSU(tcpconn),
 										TCP_PROTO(tcpconn));
 					TCP_STATS_CONNECT_FAILED();
 				}else{
-#ifdef USE_DST_BLACKLIST
-					(void)dst_blacklist_su(BLST_ERR_SEND, tcpconn->rcv.proto,
+#ifdef USE_DST_BLOCKLIST
+					(void)dst_blocklist_su(BLST_ERR_SEND, tcpconn->rcv.proto,
 										&tcpconn->rcv.src_su,
 										&tcpconn->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 					TCP_STATS_CON_RESET(); /* FIXME: it could != RST */
 				}
 			}
@@ -4537,21 +4565,21 @@ static ticks_t tcpconn_main_timeout(ticks_t t, struct timer_ln* tl, void* data)
 		else
 			return (ticks_t)(c->timeout - t);
 	}
-	/* if time out due to write, add it to the blacklist */
+	/* if time out due to write, add it to the blocklist */
 	if (tcp_async && _wbufq_non_empty(c) && TICKS_GE(t, c->wbuf_q.wr_timeout)){
 		if (unlikely(c->state==S_CONN_CONNECT)){
-#ifdef USE_DST_BLACKLIST
-			(void)dst_blacklist_su(BLST_ERR_CONNECT, c->rcv.proto, &c->rcv.src_su,
+#ifdef USE_DST_BLOCKLIST
+			(void)dst_blocklist_su(BLST_ERR_CONNECT, c->rcv.proto, &c->rcv.src_su,
 								&c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 			TCP_EV_CONNECT_TIMEOUT(0, TCP_LADDR(c), TCP_LPORT(c), TCP_PSU(c),
 									TCP_PROTO(c));
 			TCP_STATS_CONNECT_FAILED();
 		}else{
-#ifdef USE_DST_BLACKLIST
-			(void)dst_blacklist_su(BLST_ERR_SEND, c->rcv.proto, &c->rcv.src_su,
+#ifdef USE_DST_BLOCKLIST
+			(void)dst_blocklist_su(BLST_ERR_SEND, c->rcv.proto, &c->rcv.src_su,
 								&c->send_flags, 0);
-#endif /* USE_DST_BLACKLIST */
+#endif /* USE_DST_BLOCKLIST */
 			TCP_EV_SEND_TIMEOUT(0, &c->rcv);
 			TCP_STATS_SEND_TIMEOUT();
 		}
@@ -4921,6 +4949,7 @@ int init_tcp()
 		SHM_MEM_CRITICAL;
 		goto error;
 	}
+	*tcp_total_wq=0;
 #endif /* TCP_ASYNC */
 	/* alloc hashtables*/
 	tcpconn_aliases_hash=(struct tcp_conn_alias**)
@@ -5107,4 +5136,88 @@ void tcp_get_info(struct tcp_gen_info *ti)
 #endif /* TCP_ASYNC */
 }
 
+
+/* finds an ws/wss tcpconn & sends on it
+ * uses the dst members to, proto (ws/wss) and id and tries to send
+ * returns: number of bytes written (>=0) on success
+ *          <0 on error */
+int wss_send(dest_info_t* dst, const char* buf, unsigned len)
+{
+	int port;
+	struct ip_addr ip;
+	union sockaddr_union* from = NULL;
+	union sockaddr_union local_addr;
+	struct tcp_connection *con = NULL;
+	struct ws_event_info wsev;
+	sr_event_param_t evp = {0};
+	int ret;
+
+	if (unlikely((dst->proto == PROTO_WS
+#ifdef USE_TLS
+					|| dst->proto == PROTO_WSS
 #endif
+				) && sr_event_enabled(SREV_TCP_WS_FRAME_OUT))) {
+		if (unlikely(dst->send_flags.f & SND_F_FORCE_SOCKET
+					&& dst->send_sock)) {
+
+			local_addr = dst->send_sock->su;
+#ifdef SO_REUSEPORT
+			if (cfg_get(tcp, tcp_cfg, reuse_port)) {
+				LM_DBG("sending to: %s, force_socket=%d, send_sock=%p\n",
+						su2a(&dst->to,sizeof(struct sockaddr_in)),
+						(dst->send_flags.f & SND_F_FORCE_SOCKET),
+						dst->send_sock);
+
+				su_setport(&local_addr, dst->send_sock->port_no);
+			}
+			else
+				su_setport(&local_addr, 0); /* any local port will do */
+#else
+			su_setport(&local_addr, 0); /* any local port will do */
+#endif
+			from = &local_addr;
+		}
+
+		port = su_getport(&dst->to);
+		if (likely(port)) {
+			su2ip_addr(&ip, &dst->to);
+			if(tcp_connection_match==TCPCONN_MATCH_STRICT) {
+				con = tcpconn_lookup(dst->id, &ip, port, from,
+						(dst->send_sock)?dst->send_sock->port_no:0, 0);
+			} else {
+				con = tcpconn_get(dst->id, &ip, port, from, 0);
+			}
+		}
+		else if (likely(dst->id))
+			con = tcpconn_get(dst->id, 0, 0, 0, 0);
+		else {
+			LM_CRIT("null_id & to\n");
+			goto error;
+		}
+
+		if (con == NULL) {
+			LM_WARN("TCP/TLS connection for WebSocket could not be found\n");
+			goto error;
+		}
+
+		memset(&wsev, 0, sizeof(ws_event_info_t));
+		wsev.type = SREV_TCP_WS_FRAME_OUT;
+		wsev.buf = (char*)buf;
+		wsev.len = len;
+		wsev.id = con->id;
+		evp.data = (void *)&wsev;
+		ret = sr_event_exec(SREV_TCP_WS_FRAME_OUT, &evp);
+		tcpconn_put(con);
+		goto done;
+	} else {
+		LM_CRIT("used with invalid proto %d\n", dst->proto);
+		goto error;
+	}
+
+done:
+	return ret;
+error:
+	return -1;
+}
+
+#endif /* USE_TCP */
