@@ -24,17 +24,34 @@
 	<para>
 		It exports the functions to check and generate SIP Identity header.
 	</para>
+	<para>
+		Note that this module needs "secsipid_proc.so" module to be installed,
+		but without loading the "secsipid_proc.so" via "loadmodule". This module
+		loads "secsipid_proc.so" in child init callback in order to initialize
+		the "libsecsipid" per child process.
+	</para>
+	<para>
+		The libsecsipid is provided by secsipidx project:
+		<ulink url="https://github.com/asipto/secsipidx">https://github.com/asipto/secsipidx</ulink>.
+	</para>
+	<para>
+		In case of failure, the functions in this module return error codes
+		(the negative values) listed in the code of libsecsipid, pretty much
+		at the top of:
+		<ulink url="https://github.com/asipto/secsipidx/blob/main/secsipid/secsipid.go"
+			>https://github.com/asipto/secsipidx/blob/main/secsipid/secsipid.go</ulink>.
+	</para>
 	</section>
 	<section>
 	<title>Dependencies</title>
 	<section>
 		<title>&kamailio; Modules</title>
 		<para>
-		The following modules must be loaded before this module:
+		The following modules must be installed (but not loaded) to use this module:
 			<itemizedlist>
 			<listitem>
 			<para>
-				<emphasis>No dependencies on other &kamailio; modules</emphasis>.
+				<emphasis>secsipid_proc</emphasis>.
 			</para>
 			</listitem>
 			</itemizedlist>
@@ -48,7 +65,7 @@
 			<itemizedlist>
 			<listitem>
 			<para>
-				<emphasis>libsecsipid</emphasis> - https://github.com/asipto/secsipidx/.
+				<emphasis>none</emphasis>.
 			</para>
 			</listitem>
 			</itemizedlist>
@@ -133,6 +150,45 @@ modparam("secsipid", "cache_dir", "/tmp/kamailio/secsipid")
 		<programlisting format="linespecific">
 ...
 modparam("secsipid", "cache_expire", 7200)
+...
+</programlisting>
+		</example>
+	</section>
+	<section id="secsipid.p.modproc">
+		<title><varname>modproc</varname> (str)</title>
+		<para>
+		The name of or the path to the required per-process API module.
+		</para>
+		<para>
+		<emphasis>
+			Default value is "secsipid_proc.so".
+		</emphasis>
+		</para>
+		<example>
+		<title>Set <varname>modproc</varname> parameter</title>
+		<programlisting format="linespecific">
+...
+modparam("secsipid", "modproc", "secsipid_proc2.so")
+...
+</programlisting>
+		</example>
+	</section>
+	<section id="secsipid.p.libopt">
+		<title><varname>libopt</varname> (str)</title>
+		<para>
+			Set a libsecsipid option. The value has to be name=value. The
+			parameter can be set many times.
+		</para>
+		<para>
+		<emphasis>
+			Default value is "" (not set).
+		</emphasis>
+		</para>
+		<example>
+		<title>Set <varname>libopt</varname> parameter</title>
+		<programlisting format="linespecific">
+...
+modparam("secsipid", "libopt", "CacheExpires=0")
 ...
 </programlisting>
 		</example>
@@ -273,10 +329,11 @@ request_route {
 	<section id="secsipid.s.installation">
 	<title>Installation</title>
 	<para>
-		The module depends on "libsecsipid", which is a component of "sipsecidx"
-		project from https://github.com/asipto/secsipidx/. The library is
+		The module needs "secsipdi_proc.so" module that depends on "libsecsipid",
+		which is a component of "sipsecidx" project from
+		https://github.com/asipto/secsipidx/. The library is
 		implemented in Go language, with generated C API and library. Until the
-		libsecsipid is going to be packaged in OS distributions, the secsipid
+		libsecsipid is going to be packaged in OS distributions, the secsipid_proc
 		module can be compiled by copying secsipid.h libsecsipid.h and libsecsipid.a
 		files in the folder of the module.
 	</para>
@@ -285,19 +342,31 @@ request_route {
 		installed and its environment configured, then run the following commands:
 	</para>
 		<example>
-		<title>Libsecsipid usage</title>
+		<title>Libsecsipid Usage</title>
 		<programlisting format="linespecific">
 ...
+export GO111MODULE=off
 go get https://github.com/asipto/secsipidx
 cd $GOPATH/src/github.com/asipto/secsipidx/csecsipid/
 make liba
 cp secsipid.h libsecsipid.h libsecsipid.a \
-    /path/to/kamailio/src/modules/secsipid/
+    /path/to/kamailio/src/modules/secsipid_proc/
+
 cd /path/to/kamailio/
-make modules modules=src/modules/secsipid/
+make include_modules="secsipid secsipid_proc ..." cfg
+make all
+make install
+
+## or compiling individual modules for use inside source tree
+# make modules modules=src/modules/secsipid_proc
+# make modules modules=src/modules/secsipid
 ...
 </programlisting>
 		</example>
+	<para>
+		For more details about compilation and installation of libsecsipid, see:
+		<ulink url="https://github.com/asipto/secsipidx">https://github.com/asipto/secsipidx</ulink>.
+	</para>
 	</section>
 
 </chapter>

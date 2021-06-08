@@ -59,6 +59,8 @@ static tr_export_t mod_trans[] = {
 		tr_parse_tobody },
 	{ {"line", sizeof("line")-1}, /* line class */
 		tr_parse_line },
+	{ {"urialias", sizeof("urialias")-1}, /* uri alias class */
+		tr_parse_urialias },
 
 	{ { 0, 0 }, 0 }
 };
@@ -106,6 +108,8 @@ static pv_export_t mod_pvs[] = {
 		pv_parse_index, 0, 0},
 	{{"hdrc", (sizeof("hdrc")-1)}, PVT_HDRC, pv_get_hdrc, 0, pv_parse_hdr_name,
 		0, 0, 0},
+	{{"hfl", (sizeof("hfl")-1)}, PVT_HDR, pv_get_hfl, 0, pv_parse_hfl_name,
+		pv_parse_index, 0, 0},
 	{{"var", (sizeof("var")-1)}, PVT_SCRIPTVAR, pv_get_scriptvar,
 		pv_set_scriptvar, pv_parse_scriptvar_name, 0, 0, 0},
 	{{"vz", (sizeof("vz")-1)}, PVT_SCRIPTVAR, pv_get_scriptvar,
@@ -536,6 +540,10 @@ static pv_export_t mod_pvs[] = {
 		pv_parse_msg_attrs_name, 0, 0, 0 },
 	{ {"ksr", (sizeof("ksr")-1)}, PVT_OTHER, pv_get_ksr_attrs, 0,
 		pv_parse_ksr_attrs_name, 0, 0, 0 },
+	{{"rpl", (sizeof("rpl")-1)}, PVT_OTHER, pv_get_rpl_attrs, 0,
+		pv_parse_rpl_attrs_name, 0, 0, 0},
+	{{"ccp", (sizeof("ccp")-1)}, PVT_OTHER, pv_get_ccp_attrs, pv_set_ccp_attrs,
+		pv_parse_ccp_attrs_name, 0, 0, 0},
 
 	{ {0, 0}, 0, 0, 0, 0, 0, 0, 0 }
 };
@@ -686,6 +694,10 @@ static int mod_init(void)
 	if(pv_init_rpc()!=0)
 	{
 		LM_ERR("failed to register RPC commands\n");
+		return -1;
+	}
+	if(pv_ccp_ctx_init()!=0) {
+		LM_ERR("failed to initialize var ccp context\n");
 		return -1;
 	}
 	pv_init_sbranch();

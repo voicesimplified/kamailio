@@ -459,6 +459,26 @@ modparam("uac", "reg_random_delay", 300)
 			</example>
 		</section>
 
+		<section id="uac.p.reg_hash_size">
+			<title><varname>reg_hash_size</varname> (int)</title>
+			<para>
+			 The number of entries of the hash table used by uac_reg to store the
+			 registration records is 2^hash_size. For hash_size=4, the number of
+			 slots of the hash table is 16.
+			</para>
+			<para>
+				<emphasis>Default value is <quote>4</quote> (16 slots).</emphasis>
+			</para>
+			<example>
+				<title>Set <varname>reg_hash_size</varname> parameter</title>
+				<programlisting format="linespecific">
+...
+modparam("uac", "reg_hash_size", 10)
+...
+				</programlisting>
+			</example>
+		</section>
+
 		<section id="uac.p.reg_db_table">
 			<title><varname>reg_db_table</varname> (string)</title>
 			<para>
@@ -566,6 +586,24 @@ modparam("uac", "reg_gc_interval", 60)
 				</programlisting>
 			</example>
 		</section>
+		<section id="uac.p.reg_use_domain">
+			<title><varname>reg_use_domain</varname> (int)</title>
+			<para>
+				If set to 1, domain part of URIs is used by functions doing
+				lookup on user name.
+			</para>
+			<para>
+				<emphasis>Default value is <quote>0</quote>.</emphasis>
+			</para>
+			<example>
+				<title>Set <varname>reg_use_domain</varname> parameter</title>
+				<programlisting format="linespecific">
+...
+modparam("uac", "reg_use_domain", 1)
+...
+				</programlisting>
+			</example>
+		</section>
 	<section id="uac.p.default_socket">
 		<title><varname>default_socket</varname> (str)</title>
 		<para>
@@ -627,8 +665,6 @@ end
  </programlisting>
 		</example>
 	</section>
-  
-  
 	</section>
 
 	<section>
@@ -888,6 +924,57 @@ failure_route[TRUNKAUTH] {
 				</programlisting>
 			</example>
 		</section>
+		<section id="uac.f.uac_auth_mode">
+			<title>
+				<function moreinfo="none">uac_auth_mode(vmode)</function>
+			</title>
+			<para>
+			This function can be called only from failure route and will
+			build the authentication response header and insert it into the
+			request without sending anything.
+			</para>
+			<para>
+			If mode is set to 1, then the password has to be provided in HA1 format.
+			The parameter can be a static integer or a variable holding an integer value.
+			</para>
+			<para>
+			This function can be used from FAILURE_ROUTE.
+			</para>
+			<example>
+				<title><function>uac_auth_mode</function> usage</title>
+				<programlisting format="linespecific">
+...
+modparam("uac","auth_username_avp","$avp(auser)")
+modparam("uac","auth_password_avp","$avp(apass)")
+modparam("uac","auth_realm_avp","$avp(arealm)")
+
+request_route {
+   ...
+   if(is_method("INVITE")) {
+      t_on_failure("TRUNKAUTH");
+   }
+   ...
+}
+
+failure_route[TRUNKAUTH] {
+
+    if (t_is_canceled()) {
+        exit;
+    }
+    if(t_check_status("401|407")) {
+        $avp(auser) = "test";
+        $avp(apass) = "test";
+        # $avp(apass) = "36d0a02793542b4961e8348347236dbf";
+        if (uac_auth_mode("1")) {
+            t_relay();
+        }
+        exit;
+    }
+}
+...
+				</programlisting>
+			</example>
+		</section>
 		<section id="uac.f.uac_req_send">
 			<title>
 				<function moreinfo="none">uac_req_send()</function>
@@ -931,6 +1018,31 @@ uac_req_send();
 ...
 
 if(uac_reg_lookup("$rU", "$ru"))
+{
+    lookup("location");
+}
+...
+				</programlisting>
+			</example>
+		</section>
+		<section id="uac.f.uac_reg_lookup_uri">
+			<title>
+				<function moreinfo="none">uac_reg_lookup_uri(uri, dst)</function>
+			</title>
+			<para>
+			This function sets the PV dst to SIP URI that correspond to the URI user
+			in uac registrations table. The uri can contain pseudo-variables and
+			dst must be the name of a pseudo-variable.
+			</para>
+			<para>
+			This function can be used from ANY_ROUTE.
+			</para>
+			<example>
+				<title><function>uac_reg_lookup_uri</function> usage</title>
+				<programlisting format="linespecific">
+...
+
+if(uac_reg_lookup("$var(uri)", "$ru"))
 {
     lookup("location");
 }

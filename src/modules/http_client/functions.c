@@ -637,10 +637,10 @@ int curl_con_query_url(struct sip_msg *_m, const str *connection,
 /*!
  * Performs http request and saves possible result (first body line of reply)
  * to pvar.
- * This is the same http_query as used to be in the utils module.
+ * Similar to http_client_request but supports setting a content type attribute.
  */
-int http_client_request(
-		sip_msg_t *_m, char *_url, str *_dst, char *_body, char *_hdrs, char *_met)
+int http_client_request_c(sip_msg_t *_m, char *_url, str *_dst, char *_body,
+		char* _ctype, char *_hdrs, char *_met)
 {
 	int res;
 	curl_query_t query_params;
@@ -649,7 +649,7 @@ int http_client_request(
 	query_params.username = NULL;
 	query_params.secret = NULL;
 	query_params.authmethod = default_authmethod;
-	query_params.contenttype = NULL;
+	query_params.contenttype = _ctype;
 	query_params.hdrs = _hdrs;
 	query_params.post = _body;
 	query_params.clientcert = NULL;
@@ -673,10 +673,33 @@ int http_client_request(
 			query_params.http_proxy_port = default_http_proxy_port;
 		}
 	}
+	if(default_tls_clientcert.s != NULL && default_tls_clientcert.len > 0) {
+		query_params.clientcert = default_tls_clientcert.s;
+	}
+	if(default_tls_clientkey.s != NULL && default_tls_clientkey.len > 0) {
+		query_params.clientkey = default_tls_clientkey.s;
+	}
+	if(default_tls_cacert != NULL) {
+		query_params.cacert = default_tls_cacert;
+	}
+	if(default_cipher_suite_list.s != NULL && default_cipher_suite_list.len) {
+		query_params.ciphersuites = default_cipher_suite_list.s;
+	}
 
 	res = curL_request_url(_m, _met, _url, _dst, &query_params);
 
 	return res;
+}
+
+/*!
+ * Performs http request and saves possible result (first body line of reply)
+ * to pvar.
+ * This is the same http_query as used to be in the utils module.
+ */
+int http_client_request(
+		sip_msg_t *_m, char *_url, str *_dst, char *_body, char *_hdrs, char *_met)
+{
+	return http_client_request_c(_m, _url, _dst, _body, NULL, _hdrs, _met);
 }
 
 /*!
@@ -688,6 +711,17 @@ int http_client_query(
 		struct sip_msg *_m, char *_url, str *_dst, char *_post, char *_hdrs)
 {
 	return http_client_request(_m, _url, _dst, _post, _hdrs, 0);
+}
+
+/*!
+ * Performs http_query and saves possible result (first body line of reply)
+ * to pvar.
+ * This is the same http_query as used to be in the utils module.
+ */
+int http_client_query_c(
+		struct sip_msg *_m, char *_url, str *_dst, char *_post, char *_ctype, char *_hdrs)
+{
+	return http_client_request_c(_m, _url, _dst, _post, _ctype, _hdrs, 0);
 }
 
 char *http_get_content_type(const str *connection)

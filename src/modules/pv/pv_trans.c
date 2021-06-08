@@ -118,7 +118,7 @@ static int pdu_7bit_encode(str sin) {
 	nleft = 1;
 	j = 0;
 	for(i = 0; i < sin.len; i++) {
-		hex = *(sin.s) >> (nleft - 1);
+		hex = (unsigned char)(*(sin.s)) >> (nleft - 1);
 		fill = *(sin.s+1) << (8-nleft);
 		hex = hex | fill;
 		_tr_buffer[j++] = HexTbl[hex >> 4];
@@ -191,6 +191,7 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 {
 	int i, j, max;
 	char *p, *s;
+	char c;
 	str st, st2;
 	pv_value_t v, w;
 	time_t t;
@@ -292,7 +293,7 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 			j = 0;
 			for(i=0; i<val->rs.len; i++)
 			{
-				_tr_buffer[j++] = fourbits2char[val->rs.s[i] >> 4];
+				_tr_buffer[j++] = fourbits2char[(unsigned char)val->rs.s[i] >> 4];
 				_tr_buffer[j++] = fourbits2char[val->rs.s[i] & 0xf];
 			}
 			_tr_buffer[j] = '\0';
@@ -731,6 +732,28 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				}
 				i = v.ri;
 			}
+			if(tp->next->v.s.len>1) {
+				switch(tp->next->v.s.s[1]) {
+					case '\\':
+						c = '\\';
+					break;
+					case 'n':
+						c = '\n';
+					break;
+					case 'r':
+						c = '\r';
+					break;
+					case 't':
+						c = '\t';
+					break;
+					default:
+						LM_ERR("invalid select escape char (cfg line: %d)\n",
+							get_cfg_crt_line());
+						return -1;
+				}
+			} else {
+				c = tp->next->v.s.s[0];
+			}
 			val->flags = PV_VAL_STR;
 			val->ri = 0;
 			if(i<0)
@@ -741,7 +764,7 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				i--;
 				while(p>=val->rs.s)
 				{
-					if(*p==tp->next->v.s.s[0])
+					if(*p==c)
 					{
 						if(i==0)
 							break;
@@ -762,7 +785,7 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				p = s;
 				while(p<val->rs.s+val->rs.len)
 				{
-					if(*p==tp->next->v.s.s[0])
+					if(*p==c)
 					{
 						if(i==0)
 							break;
@@ -1316,6 +1339,94 @@ int tr_eval_string(struct sip_msg *msg, tr_param_t *tp, int subtype,
 			val->rs.s = int2str(j, &val->rs.len);
 			break;
 
+		case TR_S_BEFORE:
+			if(tp==NULL)
+			{
+				LM_ERR("invalid parameters (cfg line: %d)\n",
+						get_cfg_crt_line());
+				return -1;
+			}
+			if(!(val->flags&PV_VAL_STR)) {
+				val->rs.s = int2str(val->ri, &val->rs.len);
+			}
+			if(val->rs.len>TR_BUFFER_SIZE-2) {
+				LM_ERR("value too large: %d\n", val->rs.len);
+				return -1;
+			}
+			if(tp->type==TR_PARAM_STRING)
+			{
+				st = tp->v.s;
+			} else {
+				if(pv_get_spec_value(msg, (pv_spec_p)tp->v.data, &v)!=0
+						|| (!(v.flags&PV_VAL_STR)) || v.rs.len<=0)
+				{
+					LM_ERR("cannot get parameter value (cfg line: %d)\n",
+							get_cfg_crt_line());
+					return -1;
+				}
+				st = v.rs;
+			}
+			for(i=0; i<val->rs.len; i++) {
+				if(val->rs.s[i]==st.s[0]) {
+					break;
+				}
+			}
+			if(i==0) {
+				_tr_buffer[0] = '\0';
+				val->rs.len = 0;
+			} else {
+				memcpy(_tr_buffer, val->rs.s, i);
+				val->rs.len = i;
+			}
+			val->flags = PV_VAL_STR;
+			val->rs.s = _tr_buffer;
+			val->rs.s[val->rs.len] = '\0';
+			break;
+
+		case TR_S_AFTER:
+			if(tp==NULL)
+			{
+				LM_ERR("invalid parameters (cfg line: %d)\n",
+						get_cfg_crt_line());
+				return -1;
+			}
+			if(!(val->flags&PV_VAL_STR)) {
+				val->rs.s = int2str(val->ri, &val->rs.len);
+			}
+			if(val->rs.len>TR_BUFFER_SIZE-2) {
+				LM_ERR("value too large: %d\n", val->rs.len);
+				return -1;
+			}
+			if(tp->type==TR_PARAM_STRING)
+			{
+				st = tp->v.s;
+			} else {
+				if(pv_get_spec_value(msg, (pv_spec_p)tp->v.data, &v)!=0
+						|| (!(v.flags&PV_VAL_STR)) || v.rs.len<=0)
+				{
+					LM_ERR("cannot get parameter value (cfg line: %d)\n",
+							get_cfg_crt_line());
+					return -1;
+				}
+				st = v.rs;
+			}
+			for(i=0; i<val->rs.len; i++) {
+				if(val->rs.s[i]==st.s[0]) {
+					break;
+				}
+			}
+			if(i>=val->rs.len-1) {
+				_tr_buffer[0] = '\0';
+				val->rs.len = 0;
+			} else {
+				memcpy(_tr_buffer, val->rs.s+i+1, val->rs.len-i-1);
+				val->rs.len = val->rs.len-i-1;
+			}
+			val->flags = PV_VAL_STR;
+			val->rs.s = _tr_buffer;
+			val->rs.s[val->rs.len] = '\0';
+			break;
+
 		default:
 			LM_ERR("unknown subtype %d (cfg line: %d)\n",
 					subtype, get_cfg_crt_line());
@@ -1696,6 +1807,7 @@ int tr_eval_paramlist(struct sip_msg *msg, tr_param_t *tp, int subtype,
 	switch(subtype)
 	{
 		case TR_PL_VALUE:
+		case TR_PL_IN:
 			if(tp==NULL)
 			{
 				LM_ERR("value invalid parameters\n");
@@ -1720,11 +1832,23 @@ int tr_eval_paramlist(struct sip_msg *msg, tr_param_t *tp, int subtype,
 				if (pit->name.len==sv.len
 						&& strncasecmp(pit->name.s, sv.s, sv.len)==0)
 				{
-					val->rs = pit->body;
+					if(subtype==TR_PL_IN) {
+						val->ri = 1;
+						val->flags = PV_TYPE_INT|PV_VAL_INT|PV_VAL_STR;
+						val->rs.s = int2str(val->ri, &val->rs.len);
+					} else {
+						val->rs = pit->body;
+					}
 					goto done;
 				}
 			}
-			val->rs = _tr_empty;
+			if(subtype==TR_PL_IN) {
+				val->ri = 0;
+				val->flags = PV_TYPE_INT|PV_VAL_INT|PV_VAL_STR;
+				val->rs.s = int2str(val->ri, &val->rs.len);
+			} else {
+				val->rs = _tr_empty;
+			}
 			break;
 
 		case TR_PL_VALUEAT:
@@ -2239,6 +2363,59 @@ done:
 	return 0;
 }
 
+/*!
+ * \brief Evaluate urialias transformations
+ * \param msg SIP message
+ * \param tp transformation
+ * \param subtype transformation type
+ * \param val pseudo-variable
+ * \return 0 on success, -1 on error
+ */
+int tr_eval_urialias(struct sip_msg *msg, tr_param_t *tp, int subtype,
+		pv_value_t *val)
+{
+	str sv;
+
+	if(val==NULL || (!(val->flags&PV_VAL_STR)) || val->rs.len<=0)
+		return -1;
+
+	switch(subtype)
+	{
+		case TR_URIALIAS_ENCODE:
+			tr_set_crt_buffer();
+			sv.s = _tr_buffer;
+			sv.len = TR_BUFFER_SIZE;
+			if(ksr_uri_alias_encode(&val->rs, &sv)<0) {
+				LM_WARN("error converting uri to alias [%.*s]\n",
+						val->rs.len, val->rs.s);
+				val->rs = _tr_empty;
+				break;
+			}
+			val->rs = sv;
+			break;
+		case TR_URIALIAS_DECODE:
+			tr_set_crt_buffer();
+			sv.s = _tr_buffer;
+			sv.len = TR_BUFFER_SIZE;
+			if(ksr_uri_alias_decode(&val->rs, &sv)<0) {
+				LM_WARN("error converting uri to alias [%.*s]\n",
+						val->rs.len, val->rs.s);
+				val->rs = _tr_empty;
+				break;
+			}
+			val->rs = sv;
+			break;
+
+		default:
+			LM_ERR("unknown subtype %d\n",
+					subtype);
+			return -1;
+	}
+
+	val->flags = PV_VAL_STR;
+	return 0;
+}
+
 
 #define _tr_parse_nparam(_p, _p0, _tp, _spec, _n, _sign, _in, _s) \
 	while(is_in_str(_p, _in) && (*_p==' ' || *_p=='\t' || *_p=='\n')) _p++; \
@@ -2587,14 +2764,23 @@ char* tr_parse_string(str* in, trans_t *t)
 		tp->type = TR_PARAM_STRING;
 		tp->v.s.s = p;
 		tp->v.s.len = 1;
+		if(*p=='\\') {
+			p++;
+			if(*p=='\\' || *p=='n' || *p=='r' || *p=='t') {
+				tp->v.s.len = 2;
+			} else {
+				LM_ERR("unexpected escape char: %c\n", *p);
+				goto error;
+			}
+		}
 		t->params->next = tp;
 		tp = 0;
 		p++;
 		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
 		if(*p!=TR_RBRACKET)
 		{
-			LM_ERR("invalid select transformation: %.*s!!\n",
-					in->len, in->s);
+			LM_ERR("invalid select transformation: %.*s (c:%c/%d - p:%d)!!\n",
+					in->len, in->s, *p, *p, (int)(p - in->s));
 			goto error;
 		}
 		goto done;
@@ -2749,7 +2935,7 @@ char* tr_parse_string(str* in, trans_t *t)
 		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
 		if(*p!=TR_RBRACKET)
 		{
-			LM_ERR("invalid ftime transformation: %.*s!!\n",
+			LM_ERR("invalid rm transformation: %.*s!!\n",
 					in->len, in->s);
 			goto error;
 		}
@@ -2782,6 +2968,46 @@ char* tr_parse_string(str* in, trans_t *t)
 		if(*p!=TR_RBRACKET)
 		{
 			LM_ERR("invalid count transformation: %.*s!!\n",
+					in->len, in->s);
+			goto error;
+		}
+		goto done;
+	} else if(name.len==6 && strncasecmp(name.s, "before", 6)==0) {
+		t->subtype = TR_S_BEFORE;
+		if(*p!=TR_PARAM_MARKER)
+		{
+			LM_ERR("invalid before transformation: %.*s!\n",
+					in->len, in->s);
+			goto error;
+		}
+		p++;
+		_tr_parse_sparamx(p, p0, tp, spec, ps, in, s, 1);
+		t->params = tp;
+		tp = 0;
+		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
+		if(*p!=TR_RBRACKET)
+		{
+			LM_ERR("invalid before transformation: %.*s!!\n",
+					in->len, in->s);
+			goto error;
+		}
+		goto done;
+	} else if(name.len==5 && strncasecmp(name.s, "after", 5)==0) {
+		t->subtype = TR_S_AFTER;
+		if(*p!=TR_PARAM_MARKER)
+		{
+			LM_ERR("invalid after transformation: %.*s!\n",
+					in->len, in->s);
+			goto error;
+		}
+		p++;
+		_tr_parse_sparamx(p, p0, tp, spec, ps, in, s, 1);
+		t->params = tp;
+		tp = 0;
+		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
+		if(*p!=TR_RBRACKET)
+		{
+			LM_ERR("invalid after transformation: %.*s!!\n",
 					in->len, in->s);
 			goto error;
 		}
@@ -2963,128 +3189,31 @@ char* tr_parse_paramlist(str* in, trans_t *t)
 	name.len = p - name.s;
 	trim(&name);
 
-	if(name.len==5 && strncasecmp(name.s, "value", 5)==0)
-	{
+	if(name.len==5 && strncasecmp(name.s, "value", 5)==0) {
 		t->subtype = TR_PL_VALUE;
-		if(*p!=TR_PARAM_MARKER)
-		{
-			LM_ERR("invalid value transformation: %.*s\n",
-					in->len, in->s);
-			goto error;
-		}
-		p++;
-		_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
-		t->params = tp;
-		tp = 0;
-		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-
-		if(*p==TR_PARAM_MARKER)
-		{
-			start_pos = ++p;
-			_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
-			t->params->next = tp;
-			tp = 0;
-			if (p - start_pos != 1)
-			{
-				LM_ERR("invalid separator in transformation: "
-						"%.*s\n", in->len, in->s);
-				goto error;
-			}
-			while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-		}
-
-		if(*p!=TR_RBRACKET)
-		{
-			LM_ERR("invalid value transformation: %.*s!\n",
-					in->len, in->s);
-			goto error;
-		}
-		goto done;
+	} else if(name.len==2 && strncasecmp(name.s, "in", 2)==0) {
+		t->subtype = TR_PL_IN;
 	} else if(name.len==7 && strncasecmp(name.s, "valueat", 7)==0) {
 		t->subtype = TR_PL_VALUEAT;
-		if(*p!=TR_PARAM_MARKER)
-		{
-			LM_ERR("invalid name transformation: %.*s\n",
-					in->len, in->s);
-			goto error;
-		}
-		p++;
-		_tr_parse_nparam(p, p0, tp, spec, n, sign, in, s)
-			t->params = tp;
-		tp = 0;
-		while(is_in_str(p, in) && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-
-		if(*p==TR_PARAM_MARKER)
-		{
-			start_pos = ++p;
-			_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
-			t->params->next = tp;
-			tp = 0;
-			if (p - start_pos != 1)
-			{
-				LM_ERR("invalid separator in transformation: "
-						"%.*s\n", in->len, in->s);
-				goto error;
-			}
-			while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-		}
-
-		if(*p!=TR_RBRACKET)
-		{
-			LM_ERR("invalid name transformation: %.*s!\n",
-					in->len, in->s);
-			goto error;
-		}
-		goto done;
 	} else if(name.len==4 && strncasecmp(name.s, "name", 4)==0) {
 		t->subtype = TR_PL_NAME;
-		if(*p!=TR_PARAM_MARKER)
-		{
-			LM_ERR("invalid name transformation: %.*s\n",
-					in->len, in->s);
-			goto error;
-		}
-		p++;
-		_tr_parse_nparam(p, p0, tp, spec, n, sign, in, s)
-			t->params = tp;
-		tp = 0;
-		while(is_in_str(p, in) && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-
-		if(*p==TR_PARAM_MARKER)
-		{
-			start_pos = ++p;
-			_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
-			t->params->next = tp;
-			tp = 0;
-			if (p - start_pos != 1)
-			{
-				LM_ERR("invalid separator in transformation: "
-						"%.*s\n", in->len, in->s);
-				goto error;
-			}
-			while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
-		}
-
-		if(*p!=TR_RBRACKET)
-		{
-			LM_ERR("invalid name transformation: %.*s!\n",
-					in->len, in->s);
-			goto error;
-		}
-		goto done;
 	} else if(name.len==5 && strncasecmp(name.s, "count", 5)==0) {
 		t->subtype = TR_PL_COUNT;
+	} else {
+		goto unknown;
+	}
+
+	if(t->subtype == TR_PL_COUNT) {
 		if(*p==TR_PARAM_MARKER) {
 			start_pos = ++p;
 			_tr_parse_sparamx(p, p0, tp, spec, ps, in, s, 1);
 			t->params = tp;
-			if (tp->type != TR_PARAM_SPEC && p - start_pos != 1) {
+			tp = 0;
+			if (t->params->type != TR_PARAM_SPEC && p - start_pos != 1) {
 				LM_ERR("invalid separator in transformation: "
 						"%.*s\n", in->len, in->s);
 				goto error;
 			}
-			tp = 0;
-
 			while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
 			if(*p!=TR_RBRACKET) {
 				LM_ERR("invalid name transformation: %.*s!\n",
@@ -3092,10 +3221,54 @@ char* tr_parse_paramlist(str* in, trans_t *t)
 				goto error;
 			}
 		}
-
 		goto done;
 	}
 
+	/* now transformations with mandatory parameters */
+	if(*p!=TR_PARAM_MARKER)
+	{
+		LM_ERR("invalid %.*s transformation: %.*s\n",
+				name.len, name.s, in->len, in->s);
+		goto error;
+	}
+	p++;
+
+	if(t->subtype == TR_PL_VALUE || t->subtype == TR_PL_IN) {
+		_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
+		t->params = tp;
+		tp = 0;
+		while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
+	} else if(t->subtype == TR_PL_VALUEAT || t->subtype == TR_PL_NAME) {
+		_tr_parse_nparam(p, p0, tp, spec, n, sign, in, s)
+			t->params = tp;
+		tp = 0;
+		while(is_in_str(p, in) && (*p==' ' || *p=='\t' || *p=='\n')) p++;
+	}
+
+	if(*p==TR_PARAM_MARKER) {
+		start_pos = ++p;
+		_tr_parse_sparam(p, p0, tp, spec, ps, in, s);
+		t->params->next = tp;
+		tp = 0;
+		if (p - start_pos != 1) {
+			LM_ERR("invalid separator in transformation: "
+					"%.*s\n", in->len, in->s);
+			goto error;
+		}
+	}
+
+	while(*p && (*p==' ' || *p=='\t' || *p=='\n')) p++;
+	if(*p!=TR_RBRACKET) {
+		LM_ERR("invalid %.*s transformation: %.*s!\n",
+				name.len, name.s, in->len, in->s);
+		goto error;
+	}
+
+done:
+	t->name = name;
+	return p;
+
+unknown:
 	LM_ERR("unknown transformation: %.*s/%.*s!\n",
 			in->len, in->s, name.len, name.s);
 error:
@@ -3104,9 +3277,6 @@ error:
 	if(spec)
 		pv_spec_free(spec);
 	return NULL;
-done:
-	t->name = name;
-	return p;
 }
 
 
@@ -3314,6 +3484,55 @@ char* tr_parse_line(str* in, trans_t *t)
 			name.len, name.s, name.len);
 error:
 	return NULL;
+done:
+	t->name = name;
+	return p;
+}
+
+/*!
+ * \brief Helper fuction to parse urialias transformation
+ * \param in parsed string
+ * \param t transformation
+ * \return pointer to the end of the transformation in the string - '}', null on error
+ */
+char* tr_parse_urialias(str* in, trans_t *t)
+{
+	char *p;
+	str name;
+
+
+	if(in==NULL || t==NULL)
+		return NULL;
+
+	p = in->s;
+	name.s = in->s;
+	t->type = TR_URIALIAS;
+	t->trf = tr_eval_urialias;
+
+	/* find next token */
+	while(is_in_str(p, in) && *p!=TR_PARAM_MARKER && *p!=TR_RBRACKET) p++;
+	if(*p=='\0') {
+		LM_ERR("invalid transformation: %.*s\n",
+				in->len, in->s);
+		goto error;
+	}
+	name.len = p - name.s;
+	trim(&name);
+
+	if(name.len==6 && strncasecmp(name.s, "encode", 6)==0) {
+		t->subtype = TR_URIALIAS_ENCODE;
+		goto done;
+	} else if(name.len==6 && strncasecmp(name.s, "decode", 6)==0) {
+		t->subtype = TR_URIALIAS_DECODE;
+		goto done;
+	}
+
+
+	LM_ERR("unknown transformation: %.*s/%.*s/%d!\n", in->len, in->s,
+			name.len, name.s, name.len);
+error:
+	return NULL;
+
 done:
 	t->name = name;
 	return p;

@@ -628,69 +628,88 @@ static inline void strlower(str* _s)
 }
 
 
+#define str2unval(_s, _r) do { \
+		int i; \
+		if (_r == NULL) return -1; \
+		*_r = 0; \
+		if (_s == NULL) return -1; \
+		if (_s->len < 0) return -1; \
+		if (_s->s == NULL) return -1; \
+		for(i = 0; i < _s->len; i++) { \
+			if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) { \
+				*_r *= 10; \
+				*_r += _s->s[i] - '0'; \
+			} else { \
+				return -1; \
+			} \
+		} \
+		return 0; \
+	} while(0)
+
 /*
- * Convert a str into integer
+ * Convert an str to unsigned long
+ */
+static inline int str2ulong(str* _s, unsigned long* _r)
+{
+	str2unval(_s, _r);
+}
+
+/*
+ * Convert an str to unsigned integer
  */
 static inline int str2int(str* _s, unsigned int* _r)
 {
-	int i;
-
-	if (_r == NULL) return -1;
-	*_r = 0;
-	if (_s == NULL) return -1;
-	if (_s->len < 0) return -1;
-	if (_s->s == NULL) return -1;
-
-	for(i = 0; i < _s->len; i++) {
-		if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) {
-			*_r *= 10;
-			*_r += _s->s[i] - '0';
-		} else {
-			return -1;
-		}
-	}
-
-	return 0;
+	str2unval(_s, _r);
 }
+
+#define str2snval(_s, _r) do { \
+		int i; \
+		int sign; \
+		if (_s == NULL) return -1; \
+		if (_r == NULL) return -1; \
+		if (_s->len < 0) return -1; \
+		if (_s->s == NULL) return -1; \
+		*_r = 0; \
+		sign = 1; \
+		i = 0; \
+		if (_s->s[0] == '+') { \
+			i++; \
+		} else if (_s->s[0] == '-') { \
+			sign = -1; \
+			i++; \
+		} \
+		for(; i < _s->len; i++) { \
+			if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) { \
+				*_r *= 10; \
+				*_r += _s->s[i] - '0'; \
+			} else { \
+				return -1; \
+			} \
+		} \
+		*_r *= sign; \
+		return 0; \
+	} while(0)
+
+/*
+ * Convert an str to signed long
+ */
+static inline int str2slong(str* _s, long* _r)
+{
+	str2snval(_s, _r);
+}
+
 
 /*
  * Convert an str to signed integer
  */
 static inline int str2sint(str* _s, int* _r)
 {
-	int i;
-	int sign;
-
-	if (_s == NULL) return -1;
-	if (_r == NULL) return -1;
-	if (_s->len < 0) return -1;
-	if (_s->s == NULL) return -1;
-
-	*_r = 0;
-	sign = 1;
-	i = 0;
-	if (_s->s[0] == '+') {
-		i++;
-	} else if (_s->s[0] == '-') {
-		sign = -1;
-		i++;
-	}
-	for(; i < _s->len; i++) {
-		if ((_s->s[i] >= '0') && (_s->s[i] <= '9')) {
-			*_r *= 10;
-			*_r += _s->s[i] - '0';
-		} else {
-			return -1;
-		}
-	}
-	*_r *= sign;
-
-	return 0;
+	str2snval(_s, _r);
 }
 
 
 /*
- * Convert a str into integer
+ * Convert an strz to integer
  */
 static inline int strz2int(char* _s, unsigned int* _r)
 {
@@ -713,7 +732,7 @@ static inline int strz2int(char* _s, unsigned int* _r)
 }
 
 /*
- * Convert an str to signed integer
+ * Convert an strz to signed integer
  */
 static inline int strz2sint(char* _s, int* _r)
 {
@@ -745,6 +764,29 @@ static inline int strz2sint(char* _s, int* _r)
 	return 0;
 }
 
+/**
+ * duplicate str structure and content in a single shm block
+ */
+static inline str* shm_str_dup_block(const str* src)
+{
+	str *dst;
+
+	if(src==NULL) {
+		return NULL;
+	}
+	dst = (str*)shm_malloc(sizeof(str) + src->len + 1);
+	if (dst == NULL) {
+		SHM_MEM_ERROR;
+		return NULL;
+	}
+	memset(dst, 0, sizeof(str) + src->len + 1);
+
+	dst->s = (char*)dst + sizeof(str);
+	dst->len = src->len;
+	memcpy(dst->s, src->s, src->len);
+
+	return dst;
+}
 
 /**
  * \brief Make a copy of a str structure to a str using shm_malloc
@@ -1022,6 +1064,9 @@ time_t local2utc(time_t in);
 
 /* Convert time_t value in UTC to to value relative to local time zone */
 time_t utc2local(time_t in);
+
+/* Portable clock_gettime() */
+int ksr_clock_gettime(struct timespec *ts);
 
 /*
  * Return str as zero terminated string allocated

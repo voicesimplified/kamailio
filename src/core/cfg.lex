@@ -39,7 +39,11 @@
 	#include "select.h"
 	#include "cfg.tab.h"
 	#include "sr_compat.h"
+	#include "daemonize.h"
 	#include "ppcfg.h"
+
+	static void ksr_yy_fatal_error(const char* msg);
+	#define YY_FATAL_ERROR(msg) ksr_yy_fatal_error(msg);
 
 	/* states */
 	#define INITIAL_S		0
@@ -258,6 +262,7 @@ MODULO	"mod"
 STRLEN	"strlen"
 STREMPTY	"strempty"
 DEFINED		"defined"
+SELVAL		"selval"
 STREQ	eq
 INTEQ	ieq
 STRDIFF	ne
@@ -462,6 +467,9 @@ VERBOSE_STARTUP		"verbose_startup"
 
 SERVER_ID     "server_id"
 ROUTE_LOCKS_SIZE     "route_locks_size"
+WAIT_WORKER1_MODE     "wait_worker1_mode"
+WAIT_WORKER1_TIME     "wait_worker1_time"
+WAIT_WORKER1_USLEEP   "wait_worker1_usleep"
 
 KEMI     "kemi"
 ONSEND_ROUTE_CALLBACK	"onsend_route_callback"
@@ -984,6 +992,9 @@ IMPORTFILE      "import_file"
 <INITIAL>{VERBOSE_STARTUP}		{	count(); yylval.strval=yytext;
 									return VERBOSE_STARTUP; }
 <INITIAL>{ROUTE_LOCKS_SIZE}  { count(); yylval.strval=yytext; return ROUTE_LOCKS_SIZE; }
+<INITIAL>{WAIT_WORKER1_MODE}  { count(); yylval.strval=yytext; return WAIT_WORKER1_MODE; }
+<INITIAL>{WAIT_WORKER1_TIME}  { count(); yylval.strval=yytext; return WAIT_WORKER1_TIME; }
+<INITIAL>{WAIT_WORKER1_USLEEP}  { count(); yylval.strval=yytext; return WAIT_WORKER1_USLEEP; }
 <INITIAL>{SERVER_ID}  { count(); yylval.strval=yytext; return SERVER_ID;}
 <INITIAL>{KEMI}  { count(); yylval.strval=yytext; return KEMI;}
 <INITIAL>{REPLY_ROUTE_CALLBACK}  { count(); yylval.strval=yytext; return REPLY_ROUTE_CALLBACK;}
@@ -1041,6 +1052,7 @@ IMPORTFILE      "import_file"
 <INITIAL>{INTDIFF}	{ count(); return INTDIFF; }
 <INITIAL>{INTCAST}	{ count(); return INTCAST; }
 <INITIAL>{STRCAST}	{ count(); return STRCAST; }
+<INITIAL>{SELVAL}	{ count(); return SELVAL; }
 
 <INITIAL>{SELECT_MARK}  { count(); state = SELECT_S; BEGIN(SELECT); return SELECT_MARK; }
 <SELECT>{ID}		{ count(); addstr(&s_buf, yytext, yyleng);
@@ -1306,7 +1318,7 @@ IMPORTFILE      "import_file"
 									LM_CRIT(
 										"error at %s line %d: '-' not allowed\n",
 										(finame)?finame:"cfg", line);
-									exit(-1);
+									ksr_exit(-1);
 								}
 <DEFINE_ID>{ID}                 {	count();
 									ksr_cfg_print_part(yytext);
@@ -1325,7 +1337,7 @@ IMPORTFILE      "import_file"
 <DEFINE_DATA>\\{CR}		{	count(); ksr_cfg_print_part(yytext); } /* eat the escaped CR */
 <DEFINE_DATA>{CR}		{	count();
 							ksr_cfg_print_part(yytext);
-							if (pp_define_set(strlen(s_buf.s), s_buf.s)) return 1;
+							if (pp_define_set(strlen(s_buf.s), s_buf.s, KSR_PPDEF_NORMAL)) return 1;
 							memset(&s_buf, 0, sizeof(s_buf));
 							state = INITIAL;
 							ksr_cfg_print_initial_state();
@@ -1348,7 +1360,7 @@ IMPORTFILE      "import_file"
 									LM_CRIT(
 										"error at %s line %d: '-' not allowed\n",
 										(finame)?finame:"cfg", line);
-									exit(-1);
+									ksr_exit(-1);
 								}
 <IFDEF_ID>{ID}                { count();
 								pp_ifdef_var(yyleng, yytext);
@@ -1402,7 +1414,7 @@ IMPORTFILE      "import_file"
 				if(sr_push_yy_state(s_buf.s, 0)<0)
 				{
 					LOG(L_CRIT, "error at %s line %d\n", (finame)?finame:"cfg", line);
-					exit(-1);
+					ksr_exit(-1);
 				}
 				memset(&s_buf, 0, sizeof(s_buf));
 				ksr_cfg_print_initial_state();
@@ -1416,7 +1428,7 @@ IMPORTFILE      "import_file"
 				if(sr_push_yy_state(s_buf.s, 1)<0)
 				{
 					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
-					exit(-1);
+					ksr_exit(-1);
 				}
 				memset(&s_buf, 0, sizeof(s_buf));
 				ksr_cfg_print_initial_state();
@@ -1437,7 +1449,7 @@ IMPORTFILE      "import_file"
 				ksr_cfg_print_part(yytext);
 				if(pp_define_env(yytext, yyleng) < 0) {
 					LM_CRIT("error at %s line %d\n", (finame)?finame:"cfg", line);
-					exit(-1);
+					ksr_exit(-1);
 				}
 				state = INITIAL;
 				ksr_cfg_print_initial_state();
@@ -1581,7 +1593,7 @@ static char* addchar(struct str_buf* dst, char c)
 
 static char* addstr(struct str_buf* dst_b, char* src, int len)
 {
-	char *tmp;
+	char *tmp = NULL;
 	unsigned size;
 	unsigned used;
 
@@ -1600,6 +1612,10 @@ static char* addstr(struct str_buf* dst_b, char* src, int len)
 		dst_b->crt=dst_b->s+used;
 		dst_b->left=size-used;
 	}
+	if(dst_b->crt==NULL) {
+		LM_CRIT("unexpected null dst buffer\n");
+		ksr_exit(-1);
+	}
 	memcpy(dst_b->crt, src, len);
 	dst_b->crt+=len;
 	*(dst_b->crt)=0;
@@ -1608,7 +1624,7 @@ static char* addstr(struct str_buf* dst_b, char* src, int len)
 	return dst_b->s;
 error:
 	PKG_MEM_CRITICAL;
-	exit(-1);
+	ksr_exit(-1);
 }
 
 
@@ -1786,13 +1802,14 @@ static int sr_push_yy_state(char *fin, int mode)
 		fp = fopen(newf, "r" );
 		if ( fp==NULL )
 		{
-			pkg_free(newf);
 			if(mode==0)
 			{
 				LM_CRIT("cannot open included file: %s (%s)\n", fbuf, newf);
+				pkg_free(newf);
 				return -1;
 			} else {
 				LM_DBG("importing file ignored: %s (%s)\n", fbuf, newf);
+				pkg_free(newf);
 				return 0;
 			}
 		}
@@ -1911,10 +1928,15 @@ ksr_ppdefine_t* pp_get_define(int idx)
 	return &pp_defines[idx];
 }
 
-static int pp_lookup(int len, const char * text)
+static int pp_lookup(int len, const char *text)
 {
 	str var = {(char *)text, len};
 	int i;
+
+	if(len<=0 || text==NULL) {
+		LM_ERR("invalid parameters");
+		return -1;
+	}
 
 	for (i=0; i<pp_num_defines; i++)
 		if (STR_EQ(pp_defines[i].name, var))
@@ -1929,9 +1951,14 @@ int pp_define_set_type(int type)
 	return 0;
 }
 
-int pp_define(int len, const char * text)
+int pp_define(int len, const char *text)
 {
 	int ppos;
+
+	if(len<=0 || text==NULL) {
+		LM_ERR("invalid parameters");
+		return -1;
+	}
 
 	LM_DBG("defining id: %.*s\n", len, text);
 
@@ -1980,7 +2007,7 @@ int pp_define(int len, const char * text)
 	return 0;
 }
 
-int pp_define_set(int len, char *text)
+int pp_define_set(int len, char *text, int mode)
 {
 	int ppos;
 
@@ -1994,7 +2021,7 @@ int pp_define_set(int len, char *text)
 		LM_BUG("BUG: the index in define table not set yet\n");
 		return -1;
 	}
-	if(len<=0) {
+	if(len<=0 || text==NULL) {
 		LM_DBG("no define value - ignoring\n");
 		return 0;
 	}
@@ -2030,7 +2057,7 @@ int pp_define_set(int len, char *text)
 	return 0;
 }
 
-int pp_define_env(const char * text, int len)
+int pp_define_env(const char *text, int len)
 {
 	char *r;
 	str defname;
@@ -2063,7 +2090,7 @@ int pp_define_env(const char * text, int len)
 		LM_ERR("cannot set define name [%s]\n", (char*)text);
 		return -1;
 	}
-	if(pp_define_set(defvalue.len, defvalue.s)<0) {
+	if(pp_define_set(defvalue.len, defvalue.s, KSR_PPDEF_NORMAL)<0) {
 		LM_ERR("cannot set define value [%s]\n", (char*)text);
 		return -1;
 	}
@@ -2071,7 +2098,7 @@ int pp_define_env(const char * text, int len)
 	return 0;
 }
 
-str *pp_define_get(int len, const char * text)
+str *pp_define_get(int len, const char *text)
 {
 	str var = {(char *)text, len};
 	int i;
@@ -2113,7 +2140,7 @@ static int pp_ifdef_type(int type)
  * ifndef defined   -> 0
  * ifndef undefined -> 1
  */
-static void pp_ifdef_var(int len, const char * text)
+static void pp_ifdef_var(int len, const char *text)
 {
 	pp_ifdef_stack[pp_sptr] ^= (pp_lookup(len, text) < 0);
 }
@@ -2161,3 +2188,12 @@ static void pp_endif()
 	pp_update_state();
 }
 
+static void ksr_yy_fatal_error(const char* msg)
+{
+	if(ksr_atexit_mode==1) {
+		yy_fatal_error(msg);
+	}
+
+	fprintf( stderr, "%s\n", msg );
+	_exit( YY_EXIT_FAILURE );
+}

@@ -1988,7 +1988,8 @@ static int sr_kemi_hdr_append_after(sip_msg_t *msg, str *txt, str *hname)
 	hbuf[hname->len] = ':';
 	hbuf[hname->len+1] = '\0';
 
-	if (parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm)==0) {
+	parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm);
+	if(hfm.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		return -1;
 	}
@@ -2056,7 +2057,8 @@ int sr_kemi_hdr_remove(sip_msg_t *msg, str *hname)
 	hbuf[hname->len] = ':';
 	hbuf[hname->len+1] = '\0';
 
-	if (parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm)==0) {
+	parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm);
+	if(hfm.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		return -1;
 	}
@@ -2106,7 +2108,8 @@ static int sr_kemi_hdr_is_present(sip_msg_t *msg, str *hname)
 	hbuf[hname->len] = ':';
 	hbuf[hname->len+1] = '\0';
 
-	if (parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm)==0) {
+	parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm);
+	if(hfm.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		return -1;
 	}
@@ -2142,6 +2145,11 @@ static int sr_kemi_hdr_insert(sip_msg_t *msg, str *txt)
 
 	if(txt==NULL || txt->s==NULL || msg==NULL)
 		return -1;
+
+	if ((parse_headers(msg, HDR_EOH_F, 0) == -1) || (msg->headers == NULL)) {
+		LM_ERR("error while parsing message\n");
+		return -1;
+	}
 
 	LM_DBG("insert hf: %.*s\n", txt->len, txt->s);
 	hdr = (char*)pkg_malloc(txt->len);
@@ -2183,12 +2191,13 @@ static int sr_kemi_hdr_insert_before(sip_msg_t *msg, str *txt, str *hname)
 	hbuf[hname->len] = ':';
 	hbuf[hname->len+1] = '\0';
 
-	if (parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm)==0) {
+	parse_hname2_short(hbuf, hbuf+hname->len+1, &hfm);
+	if(hfm.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		return -1;
 	}
 
-	if (parse_headers(msg, HDR_EOH_F, 0) == -1) {
+	if ((parse_headers(msg, HDR_EOH_F, 0) == -1) || (msg->headers == NULL)) {
 		LM_ERR("error while parsing message\n");
 		return -1;
 	}
@@ -2300,7 +2309,8 @@ static sr_kemi_xval_t* sr_kemi_hdr_get_mode(sip_msg_t *msg, str *hname, int idx,
 		sr_kemi_xval_null(&_sr_kemi_xval, rmode);
 		return &_sr_kemi_xval;
 	}
-	if (parse_hname2_str(hname, &shdr)==0) {
+	parse_hname2_str(hname, &shdr);
+	if(shdr.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		sr_kemi_xval_null(&_sr_kemi_xval, rmode);
 		return &_sr_kemi_xval;
@@ -2421,7 +2431,8 @@ static int sr_kemi_hdr_match_content(sip_msg_t *msg, str *hname, str *op,
 		return SR_KEMI_FALSE;
 	}
 
-	if (parse_hname2_str(hname, &hfm)==0) {
+	parse_hname2_str(hname, &hfm);
+	if(hfm.type==HDR_ERROR_T) {
 		LM_ERR("error parsing header name [%.*s]\n", hname->len, hname->s);
 		return SR_KEMI_FALSE;
 	}
@@ -2853,6 +2864,47 @@ static sr_kemi_xval_t* sr_kemi_pv_getvn (sip_msg_t *msg, str *pvn, int xival)
 /**
  *
  */
+static int sr_kemi_pv_geti (sip_msg_t *msg, str *pvn)
+{
+	pv_spec_t *pvs;
+	pv_value_t val;
+	int vi;
+
+	LM_DBG("pv get: %.*s\n", pvn->len, pvn->s);
+	vi = pv_locate_name(pvn);
+	if(vi != pvn->len) {
+		LM_WARN("invalid pv [%.*s] (%d/%d)\n", pvn->len, pvn->s, vi, pvn->len);
+		return 0;
+	}
+	pvs = pv_cache_get(pvn);
+	if(pvs==NULL) {
+		LM_WARN("cannot get pv spec for [%.*s]\n", pvn->len, pvn->s);
+		return 0;
+	}
+
+	memset(&val, 0, sizeof(pv_value_t));
+	if(pv_get_spec_value(msg, pvs, &val) != 0) {
+		LM_WARN("unable to get pv value for [%.*s]\n", pvn->len, pvn->s);
+		return 0;
+	}
+	if(val.flags&PV_VAL_NULL) {
+		return 0;
+	}
+	if(val.flags&(PV_TYPE_INT|PV_VAL_INT)) {
+		return val.ri;
+	}
+	if(val.ri!=0) {
+		return val.ri;
+	}
+	vi = 0;
+	str2sint(&val.rs, &vi);
+
+	return vi;
+}
+
+/**
+ *
+ */
 static int sr_kemi_pv_seti (sip_msg_t *msg, str *pvn, int ival)
 {
 	pv_spec_t *pvs;
@@ -2995,6 +3047,11 @@ static sr_kemi_t _sr_kemi_pv[] = {
 	},
 	{ str_init("pv"), str_init("gete"),
 		SR_KEMIP_XVAL, sr_kemi_pv_gete,
+		{ SR_KEMIP_STR, SR_KEMIP_NONE, SR_KEMIP_NONE,
+			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
+	},
+	{ str_init("pv"), str_init("geti"),
+		SR_KEMIP_INT, sr_kemi_pv_geti,
 		{ SR_KEMIP_STR, SR_KEMIP_NONE, SR_KEMIP_NONE,
 			SR_KEMIP_NONE, SR_KEMIP_NONE, SR_KEMIP_NONE }
 	},

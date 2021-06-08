@@ -661,6 +661,16 @@ Lua extensions for Kamailio.
 %endif
 
 
+%package    lwsc
+Summary:    Websocket client implementation to interact with external systems, similar to http client
+Group:      %{PKGGROUP}
+Requires:   libwebsockets, kamailio = %ver
+BuildRequires:  libwebsockets-devel
+
+%description    lwsc
+Websocket client implementation to interact with external systems, similar to http client.
+
+
 %if %{with memcached}
 %package    memcached
 Summary:    Memcached configuration file support for Kamailio
@@ -1119,6 +1129,12 @@ UUID module for Kamailio.
 sed -i -e 's/python3/python2/' utils/kamctl/dbtextdb/dbtextdb.py
 %endif
 
+# on latest dist need to add --atexit=no for Kamailio options. More details GH #2616
+%if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} == 8
+sed -i -e 's|/usr/sbin/kamailio|/usr/sbin/kamailio --atexit=no|' pkg/kamailio/obs/kamailio.service
+%endif
+
+
 %build
 ln -s ../obs pkg/kamailio/%{dist_name}/%{dist_version}
 %if 0%{?fedora} || 0%{?suse_version} || 0%{?rhel} == 8
@@ -1172,6 +1188,7 @@ make every-module skip_modules="app_mono db_cassandra db_oracle iptrtpproxy \
 %if %{with lua}
     klua \
 %endif
+    klwsc \
 %if %{with memcached}
     kmemcached \
 %endif
@@ -1264,6 +1281,7 @@ make install-modules-all skip_modules="app_mono db_cassandra db_oracle \
 %if %{with lua}
     klua \
 %endif
+    klwsc \
 %if %{with memcached}
     kmemcached \
 %endif
@@ -1442,6 +1460,7 @@ fi
 %doc %{_docdir}/kamailio/modules/README.ipops
 %doc %{_docdir}/kamailio/modules/README.kemix
 %doc %{_docdir}/kamailio/modules/README.kex
+%doc %{_docdir}/kamailio/modules/README.lrkproxy
 %doc %{_docdir}/kamailio/modules/README.malloc_test
 %doc %{_docdir}/kamailio/modules/README.mangler
 %doc %{_docdir}/kamailio/modules/README.matrix
@@ -1600,6 +1619,7 @@ fi
 %{_libdir}/kamailio/modules/ipops.so
 %{_libdir}/kamailio/modules/kemix.so
 %{_libdir}/kamailio/modules/kex.so
+%{_libdir}/kamailio/modules/lrkproxy.so
 %{_libdir}/kamailio/modules/malloc_test.so
 %{_libdir}/kamailio/modules/mangler.so
 %{_libdir}/kamailio/modules/matrix.so
@@ -1923,6 +1943,11 @@ fi
 %{_libdir}/kamailio/modules/app_lua_sr.so
 %endif
 
+
+%files      lwsc
+%defattr(-,root,root)
+%doc %{_docdir}/kamailio/modules/README.lwsc
+%{_libdir}/kamailio/modules/lwsc.so
 
 %if %{with memcached}
 %files      memcached

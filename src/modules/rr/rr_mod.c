@@ -253,7 +253,6 @@ static int direction_fixup(void** param, int param_no)
 		return E_CFG;
 	}
 	if (param_no==1) {
-		n = 0;
 		s = (char*) *param;
 		if ( strcasecmp(s,"downstream")==0 ) {
 			n = RR_FLOW_DOWNSTREAM;
@@ -373,6 +372,8 @@ static int ki_record_route_preset(sip_msg_t *msg, str *addr1, str *addr2)
 		return -1;
 
 done:
+	reset_rr_param();
+
 	msg->msg_flags |= FL_RR_ADDED;
 	return 1;
 

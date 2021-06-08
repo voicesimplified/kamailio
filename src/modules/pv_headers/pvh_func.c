@@ -62,6 +62,7 @@ int pvh_collect_headers(struct sip_msg *msg)
 	char hvals[header_name_size][header_value_size];
 	int idx = 0, d_size = 0;
 	str val_part = STR_NULL;
+	char *marker = NULL;
 
 	if(pvh_hdrs_collected(msg)) {
 		LM_ERR("headers are already collected\n");
@@ -95,10 +96,10 @@ int pvh_collect_headers(struct sip_msg *msg)
 		val.len = hf->body.len;
 		val.s = hf->body.s;
 
-		if(strchr(val.s, ',') != NULL
+		if(( marker = pvh_detect_split_char(val.s)) != NULL
 				&& str_hash_case_get(&split_headers, name.s, name.len)) {
 
-			if(pvh_split_values(&val, hvals, &d_size, 1) < 0) {
+			if(pvh_split_values(&val, hvals, &d_size, 1, marker) < 0) {
 				LM_ERR("could not parse %.*s header comma separated "
 					   "value",
 						name.len, name.s);
@@ -173,6 +174,10 @@ int pvh_apply_headers(struct sip_msg *msg)
 		return -1;
 	}
 	keys_count = pvh_xavi_keys_count(&sub);
+	if(keys_count <= 0) {
+		LM_ERR("no keys found: %.*s\n", xavi_name.len, xavi_name.s);
+		return -1;
+	}
 	if(str_hash_alloc(&rm_hdrs, keys_count) < 0) {
 		PKG_MEM_ERROR;
 		return -1;
@@ -293,7 +298,7 @@ int pvh_apply_headers(struct sip_msg *msg)
 	res = 1;
 
 err:
-	if(rm_hdrs.size)
+	if(rm_hdrs.table)
 		pvh_str_hash_free(&rm_hdrs);
 	return res;
 }
