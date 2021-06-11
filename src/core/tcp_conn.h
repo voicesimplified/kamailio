@@ -300,7 +300,10 @@ typedef struct tcp_connection {
 #define TCP_ALIAS_HASH_SIZE 4096
 #define TCP_ID_HASH_SIZE 1024
 
+
+
 /* hash (dst_ip, dst_port, local_ip, local_port) */
+
 static inline unsigned tcp_addr_hash(	struct ip_addr* ip,
 										unsigned short port,
 										struct ip_addr* l_ip,
