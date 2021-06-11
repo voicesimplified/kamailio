@@ -179,7 +179,7 @@ int ksr_tls_set_connect_server_id(str *srvid)
 
 	memcpy(_ksr_tls_connect_server_id.s, srvid->s, srvid->len);
 	_ksr_tls_connect_server_id.len = srvid->len;
-	_ksr_sni_force_new = sni_hash(srvid->s);
+	_ksr_sni_force_new = 1;//sni_hash(srvid->s);
 	LM_DBG("SNI Hash: %d SNI: %.*s", _ksr_sni_force_new, _ksr_tls_connect_server_id.len, _ksr_tls_connect_server_id.s);
 	return 0;
 }
