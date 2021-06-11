@@ -1728,6 +1728,7 @@ inline static int _tcpconn_add_alias_unsafe(struct tcp_connection* c, int port,
 	is_local_ip_any=ip_addr_any(l_ip);
 	if (likely(c)){
 		hash=tcp_addr_hash(&c->rcv.src_ip, port, l_ip, l_port);
+		LM_DBG("Calculated HASH: %d",hash);
 		/* search the aliases for an already existing one */
 		for (a=tcpconn_aliases_hash[hash], nxt=0; a; a=nxt){
 			nxt=a->next;
