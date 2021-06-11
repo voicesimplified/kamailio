@@ -139,7 +139,7 @@ unsigned int sni_hash(unsigned char *str)
         unsigned long hash = 5381;
         int c;
 
-        while (c = *str++)
+        while ((c = *str++))
             hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
 
         return hash;
@@ -179,7 +179,7 @@ int ksr_tls_set_connect_server_id(str *srvid)
 
 	memcpy(_ksr_tls_connect_server_id.s, srvid->s, srvid->len);
 	_ksr_tls_connect_server_id.len = srvid->len;
-	_ksr_sni_force_new = sni_hash(srvid.s);
+	_ksr_sni_force_new = sni_hash(srvid->s);
 	LM_DBG("SNI Hash: %d", _ksr_sni_force_new);
 	return 0;
 }
