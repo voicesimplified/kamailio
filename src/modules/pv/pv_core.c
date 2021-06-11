@@ -2424,6 +2424,121 @@ int pv_get_hfl(sip_msg_t *msg, pv_param_t *param, pv_value_t *res)
 /**
  *
  */
+int pv_get_hflc(sip_msg_t *msg, pv_param_t *param, pv_value_t *res)
+{
+	pv_value_t tv = {0};
+	via_body_t *vb = NULL;
+	rr_t *rrb = NULL;
+	contact_t *cb = NULL;
+	hdr_field_t *hf = NULL;
+	int n = 0;
+
+	if(msg==NULL || res==NULL || param==NULL)
+		return -1;
+
+	/* get the name */
+	if(param->pvn.type == PV_NAME_PVAR) {
+		if(pv_get_spec_name(msg, param, &tv)!=0 || (!(tv.flags&PV_VAL_STR))) {
+			LM_ERR("invalid name\n");
+			return pv_get_sintval(msg, param, res, 0);
+		}
+	} else {
+		if(param->pvn.u.isname.type == AVP_NAME_STR) {
+			tv.flags = PV_VAL_STR;
+			tv.rs = param->pvn.u.isname.name.s;
+		} else {
+			tv.flags = 0;
+			tv.ri = param->pvn.u.isname.name.n;
+		}
+	}
+
+	if (parse_headers(msg, HDR_EOH_F, 0)<0) {
+		LM_DBG("failed to parse sip headers\n");
+		return pv_get_sintval(msg, param, res, 0);
+	}
+
+	if((tv.flags == 0) && (tv.ri==HDR_VIA_T)) {
+		if(msg->h_via1==NULL) {
+			LM_WARN("no Via header\n");
+			return pv_get_sintval(msg, param, res, 0);
+		}
+		/* count Via header bodies */
+		for(hf=msg->h_via1; hf!=NULL; hf=hf->next) {
+			if(hf->type==HDR_VIA_T) {
+				for(vb=(via_body_t*)hf->parsed; vb!=NULL; vb=vb->next) {
+					n++;
+				}
+			}
+		}
+		return pv_get_sintval(msg, param, res, n);
+	}
+
+	if((tv.flags == 0) && (tv.ri==HDR_RECORDROUTE_T || tv.ri==HDR_ROUTE_T)) {
+		if(tv.ri==HDR_RECORDROUTE_T) {
+			hf=msg->record_route;
+		} else {
+			hf=msg->route;
+		}
+		if(hf==NULL) {
+			LM_DBG("no %s header\n", (tv.ri==HDR_ROUTE_T)?"route":"record-route");
+			return pv_get_sintval(msg, param, res, 0);
+		}
+
+		/* count Record-Route/Route header bodies */
+		for(; hf!=NULL; hf=hf->next) {
+			if(hf->type==tv.ri) {
+				if(parse_rr(hf) == -1) {
+					LM_ERR("failed parsing %s header\n",
+							(tv.ri==HDR_ROUTE_T)?"route":"record-route");
+					return pv_get_sintval(msg, param, res, 0);
+				}
+				for(rrb=(rr_t*)hf->parsed; rrb!=NULL; rrb=rrb->next) {
+					n++;
+				}
+			}
+		}
+		return pv_get_sintval(msg, param, res, n);
+	}
+
+	if((tv.flags == 0) && (tv.ri==HDR_CONTACT_T)) {
+		if(msg->contact==NULL) {
+			LM_DBG("no Contact header\n");
+			return pv_get_sintval(msg, param, res, 0);
+		}
+		if(parse_contact_headers(msg) < 0) {
+			LM_DBG("failed to parse Contact headers\n");
+			return pv_get_sintval(msg, param, res, 0);
+		}
+
+		/* count Contact header bodies */
+		for(hf=msg->contact; hf!=NULL; hf=hf->next) {
+			if(hf->type==HDR_CONTACT_T) {
+				for(cb=(((contact_body_t*)hf->parsed)->contacts);
+						cb!=NULL; cb=cb->next) {
+					n++;
+				}
+			}
+		}
+		return pv_get_sintval(msg, param, res, n);
+	}
+
+	for (hf=msg->headers; hf; hf=hf->next) {
+		if(tv.flags == 0) {
+			if (tv.ri==hf->type) {
+				n++;
+			}
+		} else {
+			if (cmp_hdrname_str(&hf->name, &tv.rs)==0) {
+				n++;
+			}
+		}
+	}
+	return pv_get_sintval(msg, param, res, n);
+}
+
+/**
+ *
+ */
 int pv_get_scriptvar(struct sip_msg *msg,  pv_param_t *param,
 		pv_value_t *res)
 {
@@ -3564,6 +3679,11 @@ int pv_parse_K_name(pv_spec_p sp, str *in)
 
 	switch(in->len)
 	{
+		case 2:
+			if(strncmp(in->s, "WS", 2)==0)
+				sp->pvp.pvn.u.isname.name.n = 6;
+			else goto error;
+		break;
 		case 3:
 			if(strncmp(in->s, "UDP", 3)==0)
 				sp->pvp.pvn.u.isname.name.n = 2;
@@ -3571,15 +3691,24 @@ int pv_parse_K_name(pv_spec_p sp, str *in)
 				sp->pvp.pvn.u.isname.name.n = 3;
 			else if(strncmp(in->s, "TLS", 3)==0)
 				sp->pvp.pvn.u.isname.name.n = 4;
+			else if(strncmp(in->s, "WSS", 3)==0)
+				sp->pvp.pvn.u.isname.name.n = 7;
 			else goto error;
 		break;
 		case 4:
 			if(strncmp(in->s, "IPv4", 4)==0)
 				sp->pvp.pvn.u.isname.name.n = 0;
+			else if(strncmp(in->s, "INET", 4)==0)
+				sp->pvp.pvn.u.isname.name.n = 0;
 			else if(strncmp(in->s, "IPv6", 4)==0)
 				sp->pvp.pvn.u.isname.name.n = 1;
 			else if(strncmp(in->s, "SCTP", 4)==0)
 				sp->pvp.pvn.u.isname.name.n = 5;
+			else goto error;
+		break;
+		case 5:
+			if(strncmp(in->s, "INET6", 5)==0)
+				sp->pvp.pvn.u.isname.name.n = 1;
 			else goto error;
 		break;
 		default:
@@ -3642,6 +3771,10 @@ int pv_get_K(sip_msg_t *msg, pv_param_t *param, pv_value_t *res)
 			return pv_get_uintval(msg, param, res, PROTO_TLS);
 		case 5:
 			return pv_get_uintval(msg, param, res, PROTO_SCTP);
+		case 6:
+			return pv_get_uintval(msg, param, res, PROTO_WS);
+		case 7:
+			return pv_get_uintval(msg, param, res, PROTO_WSS);
 		default:
 			return pv_get_uintval(msg, param, res, AF_INET);
 	}
