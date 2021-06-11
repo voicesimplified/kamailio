@@ -134,7 +134,7 @@ extern str sr_tls_xavp_cfg;
 
 
 //djb2 hash algorithm http://www.cse.yorku.ca/~oz/hash.html
-unsigned int sni_hash(unsigned char *str)
+unsigned int sni_hash(char *str)
     {
         unsigned long hash = 5381;
         int c;
