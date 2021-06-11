@@ -1636,6 +1636,7 @@ int tcpconn_exists(int conn_id, ip_addr_t* peer_ip, int peer_port,
 	tcp_connection_t* c;
 
 	TCPCONN_LOCK;
+	LM_DBG("tcpconn_exists");
 	c=_tcpconn_find(conn_id, peer_ip, peer_port, local_ip, local_port);
 	TCPCONN_UNLOCK;
 	if (c) {
@@ -1672,9 +1673,12 @@ struct tcp_connection* tcpconn_lookup(int id, struct ip_addr* ip, int port,
 	}
 	TCPCONN_LOCK;
 	if(likely(try_local_port!=0) && likely(local_port==0)) {
+			LM_DBG("tcpconn_lookup 1");
+
 		c=_tcpconn_find(id, ip, port, &local_ip, try_local_port);
 	}
 	if(unlikely(c==NULL)) {
+			LM_DBG("tcpconn_lookup 2");
 		c=_tcpconn_find(id, ip, port, &local_ip, local_port);
 	}
 	if (likely(c)) {
@@ -1823,6 +1827,8 @@ int tcpconn_add_alias(int id, int port, int proto)
 	port=port?port:((proto==PROTO_TLS)?SIPS_PORT:SIP_PORT);
 	TCPCONN_LOCK;
 	/* check if alias already exists */
+				LM_DBG("tcpconn_add_alias");
+
 	c=_tcpconn_find(id, 0, 0, 0, 0);
 	if (likely(c)){
 		ip_addr_mk_any(c->rcv.src_ip.af, &zero_ip);
