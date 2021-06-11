@@ -1,3 +1,4 @@
+
 /*
  * Copyright (C) 2001-2003 FhG Fokus
  *
@@ -87,6 +88,7 @@
 #else
 #include "tls_hooks_init.h"
 #include "tls_hooks.h"
+#include "../modules/tls/tls_server.h"
 #endif /* CORE_TLS*/
 #ifdef USE_DST_BLOCKLIST
 #include "dst_blocklist.h"
@@ -1606,8 +1608,16 @@ struct tcp_connection* _tcpconn_find(int id, struct ip_addr* ip, int port,
 					(is_local_ip_any ||
 						ip_addr_cmp(l_ip, &a->parent->rcv.dst_ip))
 			   ) {
-				LM_DBG("found connection by peer address (id: %d)\n",
-						a->parent->id);
+			/*	if(a->parent->extra_data!=0){
+					//LM_DBG("Extra data found, flags: %d",a->parent->extra_data->flags);
+					LM_DBG("Forcing new connection as extra data is set");
+					return 0;
+				}*/
+				if ((a->parent->type==PROTO_TLS || a->parent->type==PROTO_WSS)&&(a->parent->extra_data) && (((struct tls_extra_data*)a->parent->extra_data)->sni==1)){
+					LM_DBG("Forcing new connection as SNI flag is set.");
+					return 0;
+				}
+				LM_DBG("found connection by peer address (id: %d)\n", a->parent->id);
 				return a->parent;
 			}
 		}

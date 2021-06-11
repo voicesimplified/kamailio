@@ -133,7 +133,7 @@ int tls_run_event_routes(struct tcp_connection *c);
 extern str sr_tls_xavp_cfg;
 
 static str _ksr_tls_connect_server_id = STR_NULL;
-
+static int _ksr_sni_force_new = 0;
 int ksr_tls_set_connect_server_id(str *srvid)
 {
 	if(srvid==NULL || srvid->len<=0) {
@@ -164,7 +164,7 @@ int ksr_tls_set_connect_server_id(str *srvid)
 
 	memcpy(_ksr_tls_connect_server_id.s, srvid->s, srvid->len);
 	_ksr_tls_connect_server_id.len = srvid->len;
-
+_ksr_sni_force_new = 1;
 	return 0;
 }
 
@@ -283,7 +283,7 @@ static int tls_complete_init(struct tcp_connection* c)
 	data->rwbio = tls_BIO_new_mbuf(0, 0);
 	data->cfg = cfg;
 	data->state = state;
-
+data->sni = _ksr_sni_force_new;
 	if (unlikely(data->ssl == 0 || data->rwbio == 0)) {
 		TLS_ERR("Failed to create SSL or BIO structure:");
 		if (data->ssl)
